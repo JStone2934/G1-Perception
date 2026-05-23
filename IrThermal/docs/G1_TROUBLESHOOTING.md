@@ -108,6 +108,31 @@ ls -la IrThermal/output/mlx90640_latest.png
 
 ---
 
+## 8. 图传热成像卡顿 / 帧率低
+
+### 现象
+
+- `teleimager-client` 热图窗口（Left Wrist Camera）长时间不动，偶尔跳帧
+- 或 FPS 显示很低且不稳定
+
+### 原因（本机已验证）
+
+1. **串口 `timeout=0`**：`poll_frame` → `sync_frame` 在 START 后约 80ms 内无数据即失败，成功率可低至 ~7%。
+2. **硬件上限**：GY-MCU 请求-应答协议，单帧约 **500ms**，稳定 **~2Hz**（非 RGB 30fps）。
+
+### 修复与配置
+
+- 使用已修复的 `irthermal` + `teleimager`（`poll_frame` 支持 `read_timeout`）。
+- yaml 推荐：`fps: 2`、`settle_s: 0.12`、`read_timeout: 1.0`。
+- 改代码后重装：
+
+```bash
+pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
+python3.8 -m pip install -e "./teleimager[server]"
+```
+
+---
+
 ## 7. 环境创建记录
 
 | 方式 | 说明 |

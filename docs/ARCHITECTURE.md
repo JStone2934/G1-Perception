@@ -27,8 +27,20 @@ robot-perception/
 ### `type: thermal`（image_server 扩展）
 
 - 依赖：`pip install -e ./IrThermal/packages/irthermal`
-- 配置字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`
+- 配置字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`、`settle_s`、`read_timeout`
 - `optional: true`（默认）：热成像未接或首帧超时时仍启动 RGB 图传
+
+#### 帧率与串口读帧
+
+GY-MCU90640 经 CH340 串口通信，**每帧须 `CMD_START` 请求**，非 UVC 连续流。G1 实测单帧周期约 **500ms → ~2Hz**。
+
+| 参数 | 推荐值 | 说明 |
+|------|--------|------|
+| `fps` | `2` | 发布线程限速；设过高只会空转 |
+| `settle_s` | `0.12` | START 后等待模块出帧（秒） |
+| `read_timeout` | `1.0` | `poll_frame` 读帧超时；**勿设 0**（会导致大量丢帧卡顿） |
+
+底层 `irthermal.poll_frame(..., read_timeout=...)` 在读帧期间临时设置串口超时，避免 `sync_frame` 在 `settle_s` 后立即失败。
 
 ### 方案 2（备用）：独立热成像 ZMQ
 

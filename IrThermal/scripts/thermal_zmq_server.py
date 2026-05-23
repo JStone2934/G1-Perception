@@ -20,7 +20,6 @@ from irthermal import (
     frame_to_temps,
     open_serial,
     poll_frame,
-    sync_frame,
     temps_to_bgr,
     wake_gy_mcu,
 )
@@ -48,8 +47,8 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--fps",
         type=float,
-        default=4.0,
-        help="发布帧率上限（模块约 4Hz）",
+        default=2.0,
+        help="发布帧率上限（模块实测约 2Hz）",
     )
     p.add_argument("--jpeg-quality", type=int, default=85, help="JPEG 质量 1-100")
     p.add_argument(
@@ -89,9 +88,7 @@ def main() -> int:
         return 1
 
     try:
-        ser.timeout = 2
-        raw = sync_frame(ser)
-        ser.timeout = 0
+        raw = poll_frame(ser, settle_s=0.12, read_timeout=2.0)
         ta, temps = frame_to_temps(raw)
         print(
             f"[thermal-zmq] 首帧 OK  Ta={ta:.1f}C  "
@@ -126,7 +123,7 @@ def main() -> int:
         while running:
             loop_start = time.monotonic()
             try:
-                raw = poll_frame(ser, settle_s=0.08)
+                raw = poll_frame(ser, settle_s=0.12, read_timeout=1.0)
                 ta, temps = frame_to_temps(raw)
             except (TimeoutError, ValueError, serial.SerialException):
                 if time.time() - last_wake > 2.0:

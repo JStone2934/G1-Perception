@@ -49,6 +49,10 @@ python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
 
 ---
 
+## 图传集成（teleimager `type: thermal`）
+
+monorepo 内通过 `teleimager/cam_config_server.yaml` 的 `left_wrist_camera` 槽位接入。串口读帧使用 `poll_frame(..., read_timeout=...)`；**勿将串口 `timeout` 设为 0**，否则 ZMQ 热图会频繁卡顿。实测帧率约 **2Hz**，详见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。
+
 ## 目录结构
 
 ```

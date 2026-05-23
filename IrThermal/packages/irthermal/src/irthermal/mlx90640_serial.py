@@ -69,12 +69,26 @@ def extract_latest_frame(buf: bytearray) -> tuple[bytes | None, int]:
     return bytes(buf[last : last + FRAME_SIZE]), last + FRAME_SIZE
 
 
-def poll_frame(ser: serial.Serial, settle_s: float = 0.1) -> bytes:
+def poll_frame(
+    ser: serial.Serial,
+    settle_s: float = 0.1,
+    *,
+    read_timeout: float | None = None,
+) -> bytes:
     """请求并读取一帧（本机 GY-MCU 需每帧发 START，非连续流）。"""
-    ser.reset_input_buffer()
-    ser.write(CMD_START)
-    time.sleep(settle_s)
-    return sync_frame(ser)
+    old_timeout = ser.timeout
+    if read_timeout is not None:
+        ser.timeout = read_timeout
+    elif not old_timeout:
+        # timeout=0 时 sync_frame 会在 settle 后立即失败，须临时设阻塞读超时
+        ser.timeout = 1.0
+    try:
+        ser.reset_input_buffer()
+        ser.write(CMD_START)
+        time.sleep(settle_s)
+        return sync_frame(ser)
+    finally:
+        ser.timeout = old_timeout
 
 
 def drain_latest_frame(ser: serial.Serial, buf: bytearray, wait_s: float = 0.05) -> bytes | None:
@@ -98,17 +112,18 @@ def sync_frame(ser: serial.Serial) -> bytes:
     """读取一帧 1544 字节，帧头 0x5A5A。"""
     buf = bytearray()
     while True:
-        b = ser.read(1)
-        if not b:
+        chunk = ser.read(256)
+        if not chunk:
             raise TimeoutError("串口超时，未收到数据")
-        buf += b
-        if len(buf) >= 2 and buf[-2:] == HEADER:
-            buf = bytearray(HEADER)
-            rest = ser.read(FRAME_SIZE - 2)
-            if len(rest) < FRAME_SIZE - 2:
-                raise TimeoutError("帧数据不完整")
-            buf.extend(rest)
-            return bytes(buf)
+        buf.extend(chunk)
+        pos = buf.find(HEADER)
+        if pos >= 0:
+            if len(buf) < pos + FRAME_SIZE:
+                rest = ser.read(pos + FRAME_SIZE - len(buf))
+                if len(rest) < pos + FRAME_SIZE - len(buf):
+                    raise TimeoutError("帧数据不完整")
+                buf.extend(rest)
+            return bytes(buf[pos : pos + FRAME_SIZE])
         if len(buf) > 4096:
             buf.clear()
 

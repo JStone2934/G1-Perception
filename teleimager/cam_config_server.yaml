@@ -36,10 +36,12 @@ left_wrist_camera:
   baud: 460800
   use_init: false
   overlay: true
+  settle_s: 0.12          # START 后等待模块出帧（秒）
+  read_timeout: 1.0       # 串口读帧超时；勿设 0
 
   image_shape: [480, 640]
   binocular: false
-  fps: 4
+  fps: 2                  # GY-MCU 实测约 2Hz；设过高会空转
 
 right_wrist_camera:
   enable_zmq: false

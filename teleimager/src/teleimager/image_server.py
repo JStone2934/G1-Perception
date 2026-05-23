@@ -1419,6 +1419,8 @@ class ThermalCamera(BaseCamera):
         use_init=False,
         overlay=True,
         jpeg_quality=85,
+        settle_s=0.12,
+        read_timeout=1.0,
     ):
         try:
             from irthermal import (
@@ -1458,12 +1460,15 @@ class ThermalCamera(BaseCamera):
             int(cv2.IMWRITE_JPEG_QUALITY),
             max(1, min(int(jpeg_quality), 100)),
         ]
+        self._settle_s = max(float(settle_s), 0.05)
+        self._read_timeout = max(float(read_timeout), 0.3)
         self._last_wake = time.time()
+        self._fail_streak = 0
         self.ser = None
 
         try:
             self.ser = self._open_serial(
-                serial_port, baud, use_init=use_init, timeout=2,
+                serial_port, baud, use_init=use_init, timeout=self._read_timeout,
             )
             ta, temps = self._acquire_first_frame()
             logger_mp.info(
@@ -1493,9 +1498,11 @@ class ThermalCamera(BaseCamera):
                 if attempt > 0:
                     self._wake_gy_mcu(self.ser, self._baud)
                     time.sleep(0.2)
-                self.ser.timeout = 2
-                raw = self._poll_frame(self.ser, settle_s=0.12)
-                self.ser.timeout = 0
+                raw = self._poll_frame(
+                    self.ser,
+                    settle_s=self._settle_s,
+                    read_timeout=self._read_timeout,
+                )
                 return self._frame_to_temps(raw)
             except Exception as exc:
                 last_err = exc
@@ -1545,12 +1552,23 @@ class ThermalCamera(BaseCamera):
         if self.ser is None:
             return
         try:
-            raw = self._poll_frame(self.ser, settle_s=0.08)
+            raw = self._poll_frame(
+                self.ser,
+                settle_s=self._settle_s,
+                read_timeout=self._read_timeout,
+            )
             ta, temps = self._frame_to_temps(raw)
             self._publish_bgr(self._render_bgr(temps, ta))
             if not self._ready.is_set():
                 self._ready.set()
-        except Exception:
+            self._fail_streak = 0
+        except Exception as exc:
+            self._fail_streak += 1
+            if self._fail_streak in (5, 20) or self._fail_streak % 50 == 0:
+                logger_mp.warning(
+                    "[ThermalCamera] %s 连续 %d 帧失败: %s",
+                    self._cam_topic, self._fail_streak, exc,
+                )
             if time.time() - self._last_wake > 2.0:
                 try:
                     self._wake_gy_mcu(self.ser, self._baud)
@@ -1708,6 +1726,8 @@ class ImageServer:
                     use_init = bool(cam_cfg.get("use_init", False))
                     overlay = bool(cam_cfg.get("overlay", True))
                     jpeg_quality = int(cam_cfg.get("jpeg_quality", 85))
+                    settle_s = float(cam_cfg.get("settle_s", 0.12))
+                    read_timeout = float(cam_cfg.get("read_timeout", 1.0))
                     optional = bool(cam_cfg.get("optional", True))
                     try:
                         self._cameras[cam_topic] = ThermalCamera(
@@ -1724,6 +1744,8 @@ class ImageServer:
                             use_init=use_init,
                             overlay=overlay,
                             jpeg_quality=jpeg_quality,
+                            settle_s=settle_s,
+                            read_timeout=read_timeout,
                         )
                     except Exception as exc:
                         if optional:

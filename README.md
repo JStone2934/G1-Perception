@@ -85,9 +85,11 @@ teleimager-client --host <G1_IP>
 | 槽位 | 类型 | 端口 | 说明 |
 |------|------|------|------|
 | `head_camera` | `opencv` | ZMQ `55555` / WebRTC `60001` | RealSense RGB |
-| `left_wrist_camera` | `thermal` | ZMQ `55556` | 热成像（串口 `/dev/ttyUSB0`） |
+| `left_wrist_camera` | `thermal` | ZMQ `55556` | 热成像（串口 `/dev/ttyUSB0`，约 2Hz） |
 
-`type: thermal` 可用字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`、`optional`。
+`type: thermal` 可用字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`、`settle_s`、`read_timeout`、`optional`。
+
+热成像为 GY-MCU **请求-应答串口流**（每帧发 START），非 UVC 连续视频；G1 实测稳定约 **2fps**。若画面卡顿，检查 yaml 中 **`read_timeout` 勿为 0**，并确认已重装 `irthermal` 包。
 
 **G1 启动前**（若 RGB 打不开或被占用）：
 
