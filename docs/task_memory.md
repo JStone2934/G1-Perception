@@ -8,7 +8,7 @@
 
 ## 进行到哪一步
 
-**RGB + 热成像双路图传已落地；热成像卡顿问题已修复（待 commit）。**
+**RGB + 热成像双路图传已落地；热成像卡顿问题已修复（commit `60be99b`）。**
 
 - **主方案（路径 B）**：`teleimager-server` 单进程同时发布 RGB + 热成像
   - RGB：`head_camera`，`type: opencv`，RealSense `/dev/video4`，ZMQ `:55555` / WebRTC `:60001`
