@@ -58,6 +58,9 @@ IrThermal/
 │   ├── capture_serial.py
 │   ├── thermal_view_serial.py
 │   ├── dual_viewer.py
+│   ├── dual_zmq_viewer.py      # 方案 2：RGB+热成像 ZMQ 预览
+│   ├── thermal_zmq_server.py   # 方案 2：独立热成像 ZMQ 发布
+│   ├── thermal_zmq_client.py
 │   ├── thermal_view.py
 │   ├── i2c_scan.py
 │   └── verify_setup.py

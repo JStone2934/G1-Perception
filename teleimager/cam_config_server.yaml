@@ -17,11 +17,29 @@ head_camera:
   binocular: false
   fps: 30
 
-  # OpenCV 模式下优先按序列号锁定 RGB 通道
+  # OpenCV 模式下优先按序列号锁定 RGB 通道；也可显式指定 video_id: 4
   serial_number: "351623061215"
+  video_id: 4
 
+# =====================================================
+# 热成像 — GY-MCU90640 串口（type: thermal）
+# 远端 teleimager-client 会显示为 "Left Wrist Camera" 窗口，无需改客户端
+# =====================================================
 left_wrist_camera:
-  enable_zmq: false
+  enable_zmq: true
+  zmq_port: 55556
+  enable_webrtc: false
+  optional: true              # 热成像未接/超时时仍启动 RGB
+
+  type: thermal
+  serial_port: /dev/ttyUSB0
+  baud: 460800
+  use_init: false
+  overlay: true
+
+  image_shape: [480, 640]
+  binocular: false
+  fps: 4
 
 right_wrist_camera:
   enable_zmq: false

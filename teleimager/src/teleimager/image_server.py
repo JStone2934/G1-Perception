@@ -1222,7 +1222,21 @@ class OpenCVCamera(BaseCamera):
         self._fourcc = self._requested_fourcc
         self._opencv_rgb_convert = False
         self._needs_manual_yuv_conversion = False
+        self._io_failures = 0
+        self._last_reopen = 0.0
+        self.cap = None
+        self._open_capture()
 
+        if not self._can_read_frame():
+            self.release()
+            busy = not _v4l2_can_stream_one_frame(self._video_path, self._img_shape[1], self._img_shape[0])
+            hint = _v4l2_device_busy_hint(self._video_path) if busy else ""
+            raise RuntimeError(
+                f"[OpenCVCamera] Camera {self._cam_topic} failed to read frames from {self._video_path}. {hint}"
+            )
+        logger_mp.info(str(self))
+
+    def _open_capture(self) -> None:
         self.cap = cv2.VideoCapture(self._video_path, cv2.CAP_V4L2)
         if not self.cap.isOpened():
             raise RuntimeError(
@@ -1245,41 +1259,40 @@ class OpenCVCamera(BaseCamera):
 
         self._configure_capture_mode()
 
-        if not self._can_read_frame():
-            self.release()
-            busy = not _v4l2_can_stream_one_frame(self._video_path, self._img_shape[1], self._img_shape[0])
-            hint = _v4l2_device_busy_hint(self._video_path) if busy else ""
-            raise RuntimeError(
-                f"[OpenCVCamera] Camera {self._cam_topic} failed to read frames from {self._video_path}. {hint}"
-            )
-        logger_mp.info(str(self))
+    def _reopen_capture(self) -> None:
+        now = time.monotonic()
+        if now - self._last_reopen < 3.0:
+            return
+        self._last_reopen = now
+        logger_mp.warning(
+            "[OpenCVCamera] %s IO failures=%d, reopening %s",
+            self._cam_topic, self._io_failures, self._video_path,
+        )
+        if self.cap is not None:
+            try:
+                self.cap.release()
+            except Exception:
+                pass
+            self.cap = None
+        time.sleep(0.2)
+        self._open_capture()
 
     def _configure_capture_mode(self) -> None:
         """Pick OpenCV RGB conversion or manual YUV decode based on device format."""
-        if not self._is_packed_yuv(self._fourcc):
-            self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-            self._opencv_rgb_convert = True
-            self._needs_manual_yuv_conversion = False
-            return
-
-        self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
-        ret, frame = self.cap.read()
-        if ret and self._looks_like_valid_bgr(frame):
-            self._opencv_rgb_convert = True
-            self._needs_manual_yuv_conversion = False
+        if self._is_packed_yuv(self._fourcc):
+            # RealSense YUYV：手动解码比 CAP_PROP_CONVERT_RGB 更稳（高负载/WebRTC 下少假帧）
+            self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
+            self._opencv_rgb_convert = False
+            self._needs_manual_yuv_conversion = True
             logger_mp.info(
-                "[OpenCVCamera] %s: using OpenCV CAP_PROP_CONVERT_RGB for %s",
+                "[OpenCVCamera] %s: manual %s -> BGR decode (RealSense/YUYV)",
                 self._cam_topic, self._fourcc,
             )
             return
 
-        self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 0)
-        self._opencv_rgb_convert = False
-        self._needs_manual_yuv_conversion = True
-        logger_mp.info(
-            "[OpenCVCamera] %s: manual %s -> BGR decode",
-            self._cam_topic, self._fourcc,
-        )
+        self.cap.set(cv2.CAP_PROP_CONVERT_RGB, 1)
+        self._opencv_rgb_convert = True
+        self._needs_manual_yuv_conversion = False
 
     def __str__(self):
         return (
@@ -1290,8 +1303,8 @@ class OpenCVCamera(BaseCamera):
         )
         
     def _can_read_frame(self):
-        ok, _ = self._read_bgr_frame()
-        return ok
+        status, _ = self._read_bgr_frame()
+        return status == "ok"
 
     def _reshape_yuv_frame(self, frame: np.ndarray) -> Optional[np.ndarray]:
         """Pack OpenCV V4L2 YUYV buffer (often 1 x bytes) into HxWx2."""
@@ -1329,48 +1342,234 @@ class OpenCVCamera(BaseCamera):
             logger_mp.warning(f"[OpenCVCamera] YUV to BGR conversion failed: {e}")
             return None
 
-    def _read_bgr_frame(self) -> Tuple[bool, Optional[np.ndarray]]:
+    def _read_bgr_frame(self) -> Tuple[str, Optional[np.ndarray]]:
+        """Return (status, bgr) where status is 'ok' | 'skip' | 'io'."""
         if self.cap is None:
-            return False, None
+            return "io", None
         ret, frame = self.cap.read()
         if not ret or frame is None:
-            return False, None
-        if self._opencv_rgb_convert:
-            if self._looks_like_valid_bgr(frame):
-                return True, frame
-            return False, None
+            return "io", None
         if self._needs_manual_yuv_conversion:
             bgr = self._convert_yuv_to_bgr(frame)
-            return (bgr is not None), bgr
+            if bgr is not None:
+                return "ok", bgr
+            return "skip", None
+        if self._opencv_rgb_convert:
+            if self._looks_like_valid_bgr(frame):
+                return "ok", frame
+            bgr = self._convert_yuv_to_bgr(frame)
+            if bgr is not None:
+                return "ok", bgr
+            return "skip", None
         if frame.ndim == 3 and frame.shape[2] == 3:
-            return True, frame
-        return False, None
+            return "ok", frame
+        return "skip", None
 
     def _update_frame(self):
-        if self.cap is not None:
-            ret, bgr_numpy = self._read_bgr_frame()
-            if ret:
-                
-                if bgr_numpy is None:
-                    return
+        if self.cap is None:
+            return
+        status, bgr_numpy = self._read_bgr_frame()
+        if status == "ok" and bgr_numpy is not None:
+            if self._enable_webrtc:
+                self._webrtc_buffer.write(bgr_numpy)
 
-                if self._enable_webrtc:
-                    self._webrtc_buffer.write(bgr_numpy)
+            if self._enable_zmq:
+                ok, buf = cv2.imencode(".jpg", bgr_numpy)
+                if ok:
+                    self._zmq_buffer.write(buf.tobytes())
 
-                if self._enable_zmq:
-                    ok, buf = cv2.imencode(".jpg", bgr_numpy)
-                    if ok:
-                        self._zmq_buffer.write(buf.tobytes())
-                
-                if not self._ready.is_set():
-                    self._ready.set()
-            else:
-                raise RuntimeError
+            if not self._ready.is_set():
+                self._ready.set()
+            self._io_failures = 0
+            return
+
+        if status == "io":
+            self._io_failures += 1
+            if self._io_failures >= 8:
+                try:
+                    self._reopen_capture()
+                except Exception as exc:
+                    logger_mp.warning(
+                        "[OpenCVCamera] %s reopen failed: %s",
+                        self._cam_topic, exc,
+                    )
+                self._io_failures = 0
 
     def release(self):
-        self.cap.release()
-        self.cap = None
+        if self.cap is not None:
+            self.cap.release()
+            self.cap = None
         logger_mp.info(f"[OpenCVCamera] Released {self._cam_topic}")
+
+class ThermalCamera(BaseCamera):
+    """GY-MCU90640 / MLX90640 串口热成像（依赖 irthermal 包）。"""
+
+    def __init__(
+        self,
+        cam_topic,
+        serial_port,
+        baud,
+        img_shape,
+        fps,
+        enable_zmq=True,
+        zmq_port=55555,
+        enable_webrtc=False,
+        webrtc_port=66666,
+        webrtc_codec=None,
+        use_init=False,
+        overlay=True,
+        jpeg_quality=85,
+    ):
+        try:
+            from irthermal import (
+                CMD_STOP,
+                frame_to_temps,
+                open_serial,
+                poll_frame,
+                sync_frame,
+                temps_to_bgr,
+                wake_gy_mcu,
+            )
+        except ImportError as exc:
+            raise ImportError(
+                "[ThermalCamera] irthermal 未安装。请执行: "
+                "pip install -e ./IrThermal/packages/irthermal"
+            ) from exc
+
+        self._CMD_STOP = CMD_STOP
+        self._frame_to_temps = frame_to_temps
+        self._open_serial = open_serial
+        self._poll_frame = poll_frame
+        self._sync_frame = sync_frame
+        self._temps_to_bgr = temps_to_bgr
+        self._wake_gy_mcu = wake_gy_mcu
+
+        super().__init__(
+            cam_topic, img_shape, fps, enable_zmq, zmq_port,
+            enable_webrtc, webrtc_port, webrtc_codec,
+        )
+        self._serial_port = serial_port
+        self._baud = baud
+        self._use_init = use_init
+        self._overlay = overlay
+        self._width = img_shape[1]
+        self._height = img_shape[0]
+        self._encode_params = [
+            int(cv2.IMWRITE_JPEG_QUALITY),
+            max(1, min(int(jpeg_quality), 100)),
+        ]
+        self._last_wake = time.time()
+        self.ser = None
+
+        try:
+            self.ser = self._open_serial(
+                serial_port, baud, use_init=use_init, timeout=2,
+            )
+            ta, temps = self._acquire_first_frame()
+            logger_mp.info(
+                "[ThermalCamera] %s 首帧 OK @ %s  Ta=%.1fC",
+                cam_topic, serial_port, ta,
+            )
+            self._publish_bgr(self._render_bgr(temps, ta))
+            self._ready.set()
+        except Exception as exc:
+            if self.ser is not None:
+                try:
+                    self.ser.close()
+                except Exception:
+                    pass
+                self.ser = None
+            raise RuntimeError(
+                f"[ThermalCamera] Failed to initialize {cam_topic} on {serial_port}: {exc}"
+            ) from exc
+
+        logger_mp.info(str(self))
+
+    def _acquire_first_frame(self, max_attempts: int = 5):
+        """GY-MCU 非连续流：须 poll_frame（发 START）取首帧，sync_frame 易超时。"""
+        last_err = None
+        for attempt in range(max_attempts):
+            try:
+                if attempt > 0:
+                    self._wake_gy_mcu(self.ser, self._baud)
+                    time.sleep(0.2)
+                self.ser.timeout = 2
+                raw = self._poll_frame(self.ser, settle_s=0.12)
+                self.ser.timeout = 0
+                return self._frame_to_temps(raw)
+            except Exception as exc:
+                last_err = exc
+                logger_mp.warning(
+                    "[ThermalCamera] %s 首帧尝试 %d/%d 失败: %s",
+                    self._cam_topic, attempt + 1, max_attempts, exc,
+                )
+                time.sleep(0.3)
+        raise RuntimeError(
+            f"[ThermalCamera] {self._cam_topic} 首帧失败（{max_attempts} 次）: {last_err}"
+        ) from last_err
+
+    def __str__(self):
+        return (
+            f"[ThermalCamera: {self._cam_topic}] {self._serial_port} @ {self._baud} "
+            f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS.\n"
+            f"ZMQ: {'enabled, zmq_port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
+            f"WebRTC: {'enabled, webrtc_port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
+        )
+
+    def _render_bgr(self, temps: np.ndarray, ta: float) -> np.ndarray:
+        bgr = self._temps_to_bgr(temps, self._width, self._height)
+        if self._overlay:
+            label = (
+                f"Ta={ta:.1f}C  min={temps.min():.1f}C  max={temps.max():.1f}C"
+            )
+            cv2.putText(
+                bgr,
+                label,
+                (10, 28),
+                cv2.FONT_HERSHEY_SIMPLEX,
+                0.65,
+                (255, 255, 255),
+                2,
+            )
+        return bgr
+
+    def _publish_bgr(self, bgr: np.ndarray) -> None:
+        if self._enable_webrtc:
+            self._webrtc_buffer.write(bgr)
+        if self._enable_zmq:
+            ok, buf = cv2.imencode(".jpg", bgr, self._encode_params)
+            if ok:
+                self._zmq_buffer.write(buf.tobytes())
+
+    def _update_frame(self):
+        if self.ser is None:
+            return
+        try:
+            raw = self._poll_frame(self.ser, settle_s=0.08)
+            ta, temps = self._frame_to_temps(raw)
+            self._publish_bgr(self._render_bgr(temps, ta))
+            if not self._ready.is_set():
+                self._ready.set()
+        except Exception:
+            if time.time() - self._last_wake > 2.0:
+                try:
+                    self._wake_gy_mcu(self.ser, self._baud)
+                    self._last_wake = time.time()
+                except Exception:
+                    pass
+
+    def release(self):
+        if self.ser is not None:
+            try:
+                self.ser.write(self._CMD_STOP)
+            except Exception:
+                pass
+            try:
+                self.ser.close()
+            except Exception:
+                pass
+            self.ser = None
+        logger_mp.info(f"[ThermalCamera] Released {self._cam_topic}")
 
 # ========================================================
 # image server
@@ -1500,6 +1699,41 @@ class ImageServer:
                             else:
                                 self._cameras[cam_topic] = UVCCamera(cam_topic, uid, img_shape, fps, 
                                                                      enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
+
+                elif cam_type == "thermal":
+                    if img_shape is None:
+                        img_shape = [480, 640]
+                    serial_port = str(cam_cfg.get("serial_port", "/dev/ttyUSB0"))
+                    baud = int(cam_cfg.get("baud", 460800))
+                    use_init = bool(cam_cfg.get("use_init", False))
+                    overlay = bool(cam_cfg.get("overlay", True))
+                    jpeg_quality = int(cam_cfg.get("jpeg_quality", 85))
+                    optional = bool(cam_cfg.get("optional", True))
+                    try:
+                        self._cameras[cam_topic] = ThermalCamera(
+                            cam_topic,
+                            serial_port,
+                            baud,
+                            img_shape,
+                            fps,
+                            enable_zmq,
+                            zmq_port,
+                            enable_webrtc,
+                            webrtc_port,
+                            webrtc_codec,
+                            use_init=use_init,
+                            overlay=overlay,
+                            jpeg_quality=jpeg_quality,
+                        )
+                    except Exception as exc:
+                        if optional:
+                            logger_mp.warning(
+                                "[Image Server] Optional thermal %s disabled: %s",
+                                cam_topic, exc,
+                            )
+                            continue
+                        raise
+
                 else:
                     logger_mp.error(f"[Image Server] Unknown camera type {cam_type} for {cam_topic}, skipping...")
                     continue
@@ -1518,7 +1752,9 @@ class ImageServer:
                 try:
                     camera._update_frame()
                 except Exception as e:
-                    logger_mp.error(f"[Image Server] Error updating frame for {cam_topic} camera")
+                    logger_mp.error(
+                        f"[Image Server] Error updating frame for {cam_topic} camera: {e}"
+                    )
                     self._stop_event.set()
                     break
                 next_frame_time += interval
@@ -1541,9 +1777,8 @@ class ImageServer:
                 if jpeg_bytes is not None:
                     self._zmq_publisher_manager.publish(jpeg_bytes, camera.get_zmq_port())
                 else:
-                    logger_mp.warning(f"[Image Server] {cam_topic} returned no frame.")
-                    self._stop_event.set()
-                    break
+                    time.sleep(0.01)
+                    continue
 
                 next_frame_time += interval
                 sleep_time = next_frame_time - time.monotonic()
@@ -1566,9 +1801,8 @@ class ImageServer:
                 if bgr_frame is not None:
                     self._webrtc_publisher_manager.publish(bgr_frame, camera.get_webrtc_port(), codec_pref=webrtc_codec)
                 else:
-                    logger_mp.info(f"[Image Server] {cam_topic} returned no frame.")
-                    self._stop_event.set()
-                    break
+                    time.sleep(0.01)
+                    continue
 
                 next_frame_time += interval
                 sleep_time = next_frame_time - time.monotonic()

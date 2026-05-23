@@ -20,8 +20,8 @@ cd /home/unitree/JS_test/thermal/robot-perception
 # 推荐：继续使用已有 conda 环境 thermal
 conda activate thermal
 pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
-python -m pip install -e "./teleimager[server]"   # 须用 env 内 pip，勿用 ~/.local/bin/pip
-# 无网时: python -m pip install -e "./teleimager" --no-deps
+python3.8 -m pip install -e "./teleimager[server]"   # G1 常用 python3.8；须与运行 teleimager-server 的解释器一致
+# 无网时: python3.8 -m pip install -e "./teleimager" --no-deps
 
 # 全新机器才需要：
 # conda env create -f environment.yml && conda activate thermal
@@ -59,20 +59,60 @@ python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
 
 ---
 
-## 图传（RGB）
+## 图传（RGB + 热成像，单进程）
+
+`teleimager-server` 已支持 `type: thermal`（串口 MLX90640）。热成像配置在 **`left_wrist_camera`** 槽位，远端标准 `teleimager-client` 会自动显示 **Left Wrist Camera** 窗口，**无需改远端代码**。
 
 ```bash
 conda activate thermal
-cd teleimager
-teleimager-server --cf          # 发现相机，填写 cam_config_server.yaml
-teleimager-server
+cd /home/unitree/JS_test/thermal/robot-perception
 
-# 另一终端（远端）
+# 确认 irthermal + teleimager 已安装（改 image_server 后需重装）
+pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
+python3.8 -m pip install -e "./teleimager[server]"
+
+# G1 上启动（RGB + 热成像，单进程）
+./services/start_teleimager.sh
+# 或: python3.8 -m teleimager.image_server
+
+# 远端 PC（标准客户端，零改动）
 teleimager-client --host <G1_IP>
-# WebRTC: https://<G1_IP>:60001
+# WebRTC RGB: https://<G1_IP>:60001
 ```
 
-一键启动：`./services/start_teleimager.sh`
+配置见 `teleimager/cam_config_server.yaml`：
+
+| 槽位 | 类型 | 端口 | 说明 |
+|------|------|------|------|
+| `head_camera` | `opencv` | ZMQ `55555` / WebRTC `60001` | RealSense RGB |
+| `left_wrist_camera` | `thermal` | ZMQ `55556` | 热成像（串口 `/dev/ttyUSB0`） |
+
+`type: thermal` 可用字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`、`optional`。
+
+**G1 启动前**（若 RGB 打不开或被占用）：
+
+```bash
+/unitree/sbin/mscli stopservice video_hub_pc4
+lsof /dev/video4
+```
+
+排障详见 [`teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md`](teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md)、[`IrThermal/docs/G1_TROUBLESHOOTING.md`](IrThermal/docs/G1_TROUBLESHOOTING.md)。
+
+---
+
+## 热成像 ZMQ 图传（方案 2，独立进程，备用）
+
+若不想改 `image_server.py`，可用独立脚本发布热成像 ZMQ（与 `teleimager-server` 并行）：
+
+```bash
+# G1 — 终端 1
+./services/start_teleimager.sh
+# G1 — 终端 2
+./services/start_thermal_zmq.sh --port /dev/ttyUSB0
+
+# 远端 — 需专用客户端
+python IrThermal/scripts/dual_zmq_viewer.py --host <G1_IP>
+```
 
 ---
 
@@ -88,6 +128,8 @@ robot-perception/
 │   └── activate.sh
 ├── teleimager/
 ├── services/
+│   ├── start_teleimager.sh
+│   └── start_thermal_zmq.sh   # 方案 2 备用
 ├── docs/
 ├── environment.yml         # conda 环境名: thermal
 ├── requirements.txt
@@ -99,8 +141,4 @@ robot-perception/
 ## 迁移说明
 
 本仓库由 `JS_test/thermal/IrThermal` 与 `JS_test/thermal/teleimager` 收敛而成。  
-**新开发请以 `robot-perception/` 为准**；同级旧目录 `JS_test/thermal/IrThermal` 可保留作备份。
-
-图传配置以 **`JS_test/thermal/teleimager/cam_config_server.yaml`** 为准（`video_id: 4`、`fourcc: YUYV`）；`robot-perception/teleimager/` 内为同步副本。勿改原仓库 `teleimager/src/teleimager/image_server.py` / `image_client.py`。
-
-后续可在 `teleimager` 中增加 `type: thermal`，将 `irthermal` 作为图传第二路（见架构文档）。
+**新开发请以 `robot-perception/` 为准**；图传配置见 `robot-perception/teleimager/cam_config_server.yaml`。
