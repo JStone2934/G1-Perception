@@ -1,0 +1,6 @@
+# 在 conda env thermal 中，于 robot-perception 根目录执行:
+#   pip install -r requirements.txt
+-e ./IrThermal/packages/irthermal[gui,i2c]
+
+# 图传（服务端含 WebRTC）
+-e "./teleimager[server]"

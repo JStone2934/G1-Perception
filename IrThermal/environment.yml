@@ -1,0 +1,14 @@
+# 仅热成像子项目；完整 monorepo 请用上级 ../environment.yml
+# 推荐沿用已有环境: conda activate thermal
+name: thermal
+channels:
+  - conda-forge
+  - defaults
+dependencies:
+  - python=3.11
+  - pip
+  - numpy
+  - matplotlib
+  - pyserial
+  - pip:
+      - -e ./packages/irthermal[gui,i2c]

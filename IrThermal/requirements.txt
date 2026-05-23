@@ -1,0 +1,3 @@
+# 在 conda env thermal 中，于 IrThermal/ 目录执行:
+#   pip install -r requirements.txt
+-e ./packages/irthermal[gui,i2c]

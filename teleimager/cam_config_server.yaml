@@ -1,0 +1,27 @@
+# =====================================================
+# Head camera — Intel RealSense D435i RGB (OpenCV/V4L2)
+# 发现命令: teleimager-server --cf
+# =====================================================
+
+head_camera:
+  enable_zmq: true
+  zmq_port: 55555
+  enable_webrtc: true
+  webrtc_port: 60001
+  webrtc_codec: h264
+
+  type: opencv
+  fourcc: YUYV   # RealSense RGB UVC 实际为 YUYV；写 UYVY 会导致色彩错误
+
+  image_shape: [480, 848]
+  binocular: false
+  fps: 30
+
+  # OpenCV 模式下优先按序列号锁定 RGB 通道
+  serial_number: "351623061215"
+
+left_wrist_camera:
+  enable_zmq: false
+
+right_wrist_camera:
+  enable_zmq: false

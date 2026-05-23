@@ -1,0 +1,30 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+**/build/
+**/dist/
+
+# Conda / local
+.env
+
+# Generated outputs
+output/*.png
+output/*.npy
+IrThermal/output/*.png
+IrThermal/output/*.npy
+*.png
+!docs/**/*.png
+
+# IDE
+.idea/
+.vscode/
+*.swp
+
+# teleimager TLS（勿提交私钥）
+teleimager/*.pem
+teleimager/*.key
+teleimager/**/__pycache__/
+teleimager/**/*.egg-info/
+teleimager/000*
