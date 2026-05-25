@@ -39,7 +39,6 @@ depth_camera:
 
   type: realsense
   stream: depth
-  shared_rgbd: false
   depth_align_to_color: true
   depth_align_fill_holes: true
   depth_align_fill_iterations: 1
@@ -53,7 +52,7 @@ depth_camera:
 
   image_shape: [480, 640]
   binocular: false
-  fps: 15
+  fps: 30
 
   # null 会自动使用第一台 RealSense；也可固定为 351623061215
   serial_number: null

@@ -25,7 +25,7 @@ import signal
 import functools
 import subprocess
 import platform
-from .image_client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser, pack_image_packet
+from .image_client import TripleRingBuffer, ZMQ_PublisherManager, ZMQ_Responser
 # webrtc dependencies
 import asyncio
 import json
@@ -1020,186 +1020,6 @@ class BaseCamera:
         """Release camera resources."""
         raise NotImplementedError
 
-class SharedRealSenseRGBDSource:
-    _instances = {}
-    _registry_lock = threading.Lock()
-
-    @classmethod
-    def acquire(cls, rs, serial_number, img_shape, fps):
-        key = (str(serial_number), int(img_shape[0]), int(img_shape[1]), int(fps))
-        with cls._registry_lock:
-            source = cls._instances.get(key)
-            if source is None:
-                source = cls(rs, serial_number, img_shape, fps)
-                cls._instances[key] = source
-            source._ref_count += 1
-            return source
-
-    def __init__(self, rs, serial_number, img_shape, fps):
-        self._rs = rs
-        self._serial_number = str(serial_number)
-        self._img_shape = img_shape
-        self._fps = fps
-        self._ref_count = 0
-        self._running = True
-        self._ready = threading.Event()
-        self._lock = threading.Lock()
-        self._processing_lock = threading.Lock()
-        self._color_bgr = None
-        self._depth_z16 = None
-        self._frame_number = None
-        self._timestamp_ms = None
-        self._depth_scale = 0.001
-        self._depth_align_to_color = True
-        self._depth_align_fill_holes = False
-        self._depth_align_fill_iterations = 1
-        self._depth_filters = []
-
-        self.pipeline = rs.pipeline()
-        config = rs.config()
-        config.enable_device(self._serial_number)
-        config.enable_stream(rs.stream.color, self._img_shape[1], self._img_shape[0], rs.format.bgr8, self._fps)
-        config.enable_stream(rs.stream.depth, self._img_shape[1], self._img_shape[0], rs.format.z16, self._fps)
-        profile = self.pipeline.start(config)
-        self._device = profile.get_device()
-        depth_sensor = self._device.first_depth_sensor()
-        self._depth_scale = depth_sensor.get_depth_scale()
-        self._align = rs.align(rs.stream.color)
-        self.color_intrinsics = profile.get_stream(rs.stream.color).as_video_stream_profile().get_intrinsics()
-        self.depth_intrinsics = profile.get_stream(rs.stream.depth).as_video_stream_profile().get_intrinsics()
-
-        self._thread = threading.Thread(target=self._run, daemon=True)
-        self._thread.start()
-        logger_mp.info(
-            f"[SharedRealSenseRGBDSource] started serial={self._serial_number} "
-            f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS."
-        )
-
-    @property
-    def depth_scale(self):
-        return self._depth_scale
-
-    def _set_filter_option(self, filter_obj, option, value):
-        try:
-            if hasattr(filter_obj, "supports") and not filter_obj.supports(option):
-                return
-            filter_obj.set_option(option, value)
-        except Exception:
-            pass
-
-    def configure_depth_processing(
-        self,
-        align_to_color=True,
-        align_fill_holes=False,
-        align_fill_iterations=1,
-        spatial_filter=False,
-        temporal_filter=False,
-        hole_filling=False,
-        hole_filling_mode=1,
-    ):
-        rs = self._rs
-        filters = []
-        if spatial_filter:
-            spatial = rs.spatial_filter()
-            self._set_filter_option(spatial, rs.option.filter_magnitude, 2)
-            self._set_filter_option(spatial, rs.option.filter_smooth_alpha, 0.5)
-            self._set_filter_option(spatial, rs.option.filter_smooth_delta, 20)
-            self._set_filter_option(spatial, rs.option.holes_fill, 1)
-            filters.append(spatial)
-        if temporal_filter:
-            filters.append(rs.temporal_filter())
-        if hole_filling:
-            hole_filling_filter = rs.hole_filling_filter()
-            self._set_filter_option(hole_filling_filter, rs.option.holes_fill, int(hole_filling_mode))
-            filters.append(hole_filling_filter)
-
-        with self._processing_lock:
-            self._depth_align_to_color = bool(align_to_color)
-            self._depth_align_fill_holes = bool(align_fill_holes)
-            self._depth_align_fill_iterations = max(0, int(align_fill_iterations))
-            self._depth_filters = filters
-
-    def _fill_depth_holes(self, depth_z16, iterations):
-        if iterations <= 0:
-            return depth_z16
-        filled = depth_z16.copy()
-        kernel = np.ones((3, 3), dtype=np.uint8)
-        for _ in range(iterations):
-            holes = filled == 0
-            if not np.any(holes):
-                break
-            dilated = cv2.dilate(filled, kernel)
-            filled[holes] = dilated[holes]
-        return filled
-
-    def _run(self):
-        while self._running:
-            try:
-                frames = self.pipeline.wait_for_frames()
-                with self._processing_lock:
-                    align_to_color = self._depth_align_to_color
-                    align_fill_holes = self._depth_align_fill_holes
-                    align_fill_iterations = self._depth_align_fill_iterations
-                    filters = list(self._depth_filters)
-
-                if align_to_color:
-                    frames = self._align.process(frames)
-
-                color_frame = frames.get_color_frame()
-                depth_frame = frames.get_depth_frame()
-                if not color_frame or not depth_frame:
-                    continue
-
-                for depth_filter in filters:
-                    depth_frame = depth_filter.process(depth_frame)
-
-                color_bgr = np.asanyarray(color_frame.get_data())
-                depth_z16 = np.asanyarray(depth_frame.get_data())
-                if align_fill_holes:
-                    depth_z16 = self._fill_depth_holes(depth_z16, align_fill_iterations)
-
-                with self._lock:
-                    self._color_bgr = color_bgr.copy()
-                    self._depth_z16 = depth_z16.copy()
-                    self._frame_number = color_frame.get_frame_number()
-                    self._timestamp_ms = color_frame.get_timestamp()
-                    self._ready.set()
-            except Exception as e:
-                if self._running:
-                    logger_mp.error(f"[SharedRealSenseRGBDSource] update failed: {e}")
-                    time.sleep(0.01)
-
-    def latest_color(self):
-        with self._lock:
-            return None if self._color_bgr is None else self._color_bgr.copy()
-
-    def latest_depth(self):
-        with self._lock:
-            return None if self._depth_z16 is None else self._depth_z16.copy()
-
-    def wait_until_ready(self, timeout=5.0):
-        return self._ready.wait(timeout=timeout)
-
-    def release_ref(self):
-        with self._registry_lock:
-            self._ref_count -= 1
-            if self._ref_count > 0:
-                return
-            key = (self._serial_number, int(self._img_shape[0]), int(self._img_shape[1]), int(self._fps))
-            self._instances.pop(key, None)
-        self.close()
-
-    def close(self):
-        self._running = False
-        if hasattr(self, "_thread") and self._thread.is_alive():
-            self._thread.join(timeout=1.0)
-        try:
-            self.pipeline.stop()
-        except Exception as e:
-            logger_mp.warning(f"[SharedRealSenseRGBDSource] pipeline.stop() failed: {e}")
-        logger_mp.info(f"[SharedRealSenseRGBDSource] stopped serial={self._serial_number}")
-
-
 class RealSenseCamera(BaseCamera):
     def __init__(self, cam_topic, serial_number, img_shape, fps, 
                  enable_zmq=True, zmq_port = 55555, enable_webrtc=False, webrtc_port=66666, webrtc_codec=None, enable_depth=False,
@@ -1207,8 +1027,7 @@ class RealSenseCamera(BaseCamera):
                  depth_colormap="turbo", depth_invert=False, depth_align_to_color=False,
                  depth_align_fill_holes=False, depth_align_fill_iterations=1,
                  depth_spatial_filter=False, depth_temporal_filter=False,
-                 depth_hole_filling=False, depth_hole_filling_mode=1,
-                 shared_rgbd=False):
+                 depth_hole_filling=False, depth_hole_filling_mode=1):
         rs = self.check_pyrealsense2_install()
         super().__init__(cam_topic, img_shape, fps, enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec)
         self._rs = rs
@@ -1238,32 +1057,10 @@ class RealSenseCamera(BaseCamera):
         self._depth_to_color_extrinsics = None
         self._depth_u_grid = None
         self._depth_v_grid = None
-        self._shared_rgbd = False
-        self._shared_source = None
         self.pipeline = None
         self.align = None
         self._device = None
         self.g_depth_scale = 0.001
-        if shared_rgbd:
-            self._shared_rgbd = True
-            self._shared_source = SharedRealSenseRGBDSource.acquire(rs, self._serial_number, self._img_shape, self._fps)
-            if self._stream == "depth":
-                self._shared_source.configure_depth_processing(
-                    align_to_color=self._depth_align_to_color,
-                    align_fill_holes=self._depth_align_fill_holes,
-                    align_fill_iterations=self._depth_align_fill_iterations,
-                    spatial_filter=self._depth_spatial_filter,
-                    temporal_filter=self._depth_temporal_filter,
-                    hole_filling=self._depth_hole_filling,
-                    hole_filling_mode=self._depth_hole_filling_mode,
-                )
-                self.intrinsics = self._shared_source.color_intrinsics if self._depth_align_to_color else self._shared_source.depth_intrinsics
-            else:
-                self.intrinsics = self._shared_source.color_intrinsics
-            self.g_depth_scale = self._shared_source.depth_scale
-            logger_mp.info(str(self))
-            return
-
         try:
             self.pipeline = rs.pipeline()
             config = rs.config()
@@ -1499,36 +1296,7 @@ class RealSenseCamera(BaseCamera):
         return bgr_numpy
     
     def _update_frame(self):
-        if self._shared_rgbd:
-            capture_time_ns = time.monotonic_ns()
-            if self._stream == "depth":
-                self._latest_depth = self._shared_source.latest_depth()
-                if self._latest_depth is None:
-                    return None
-                bgr_numpy = self._depth_to_bgr(self._latest_depth)
-            else:
-                bgr_numpy = self._shared_source.latest_color()
-                if bgr_numpy is None:
-                    return None
-
-            if self._enable_webrtc:
-                self._webrtc_buffer.write(bgr_numpy)
-
-            if self._enable_zmq:
-                ok, buf = cv2.imencode(".jpg", bgr_numpy)
-                if ok:
-                    self._zmq_buffer.write(pack_image_packet(
-                        buf.tobytes(),
-                        cam_topic=self._cam_topic,
-                        capture_time_ns=capture_time_ns,
-                    ))
-
-            if not self._ready.is_set():
-                self._ready.set()
-            return
-
         frames = self.pipeline.wait_for_frames()
-        capture_time_ns = time.monotonic_ns()
         if self._stream == "depth":
             depth_frame = frames.get_depth_frame()
             if not depth_frame:
@@ -1559,11 +1327,7 @@ class RealSenseCamera(BaseCamera):
         if self._enable_zmq:
             ok, buf = cv2.imencode(".jpg", bgr_numpy)
             if ok:
-                self._zmq_buffer.write(pack_image_packet(
-                    buf.tobytes(),
-                    cam_topic=self._cam_topic,
-                    capture_time_ns=capture_time_ns,
-                ))
+                self._zmq_buffer.write(buf.tobytes())
         
         if not self._ready.is_set():
             self._ready.set()
@@ -1574,13 +1338,6 @@ class RealSenseCamera(BaseCamera):
         return self._latest_depth.tobytes()
 
     def release(self):
-        if self._shared_rgbd:
-            if self._shared_source is not None:
-                self._shared_source.release_ref()
-                self._shared_source = None
-            logger_mp.info(f"[RealSenseCamera] Released {self._cam_topic}")
-            return
-
         try:
             if self.pipeline is not None and hasattr(self.pipeline, "stop"):
                 try:
@@ -1632,23 +1389,14 @@ class UVCCamera(BaseCamera):
         if self.cap is not None:
             frame = self.cap.get_frame_robust() # get_frame(timeout=500)
             if frame is not None:
-                capture_time_ns = time.monotonic_ns()
                 if self._enable_zmq:
                     jpeg_buffer = getattr(frame, "jpeg_buffer", None)
                     if jpeg_buffer is not None:
-                        self._zmq_buffer.write(pack_image_packet(
-                            bytes(jpeg_buffer),
-                            cam_topic=self._cam_topic,
-                            capture_time_ns=capture_time_ns,
-                        ))
+                        self._zmq_buffer.write(bytes(jpeg_buffer))
                     elif frame.bgr is not None:
                         ok, buf = cv2.imencode(".jpg", frame.bgr)
                         if ok:
-                            self._zmq_buffer.write(pack_image_packet(
-                                buf.tobytes(),
-                                cam_topic=self._cam_topic,
-                                capture_time_ns=capture_time_ns,
-                            ))
+                            self._zmq_buffer.write(buf.tobytes())
 
                 if self._enable_webrtc:
                     if frame.bgr is not None:
@@ -1863,18 +1611,13 @@ class OpenCVCamera(BaseCamera):
             return
         status, bgr_numpy = self._read_bgr_frame()
         if status == "ok" and bgr_numpy is not None:
-            capture_time_ns = time.monotonic_ns()
             if self._enable_webrtc:
                 self._webrtc_buffer.write(bgr_numpy)
 
             if self._enable_zmq:
                 ok, buf = cv2.imencode(".jpg", bgr_numpy)
                 if ok:
-                    self._zmq_buffer.write(pack_image_packet(
-                        buf.tobytes(),
-                        cam_topic=self._cam_topic,
-                        capture_time_ns=capture_time_ns,
-                    ))
+                    self._zmq_buffer.write(buf.tobytes())
 
             if not self._ready.is_set():
                 self._ready.set()
@@ -2044,11 +1787,7 @@ class ThermalCamera(BaseCamera):
         if self._enable_zmq:
             ok, buf = cv2.imencode(".jpg", bgr, self._encode_params)
             if ok:
-                self._zmq_buffer.write(pack_image_packet(
-                    buf.tobytes(),
-                    cam_topic=self._cam_topic,
-                    capture_time_ns=time.monotonic_ns(),
-                ))
+                self._zmq_buffer.write(buf.tobytes())
 
     def _update_frame(self):
         if self.ser is None:
@@ -2200,7 +1939,6 @@ class ImageServer:
                             depth_temporal_filter=cam_cfg.get("depth_temporal_filter", False),
                             depth_hole_filling=cam_cfg.get("depth_hole_filling", False),
                             depth_hole_filling_mode=cam_cfg.get("depth_hole_filling_mode", 1),
-                            shared_rgbd=cam_cfg.get("shared_rgbd", False),
                         )
 
                 elif cam_type == "uvc":
