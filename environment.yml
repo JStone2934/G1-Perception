@@ -1,4 +1,6 @@
-name: g1-mlx90640
+# 若继续使用已有环境，不必 conda env create；在 thermal 里 pip install 即可。
+# name 仅在新环境时使用；推荐保持: conda activate thermal
+name: thermal
 channels:
   - conda-forge
   - defaults
@@ -9,8 +11,5 @@ dependencies:
   - matplotlib
   - pyserial
   - pip:
-      - adafruit-blinka
-      - adafruit-circuitpython-mlx90640
-      - adafruit-circuitpython-busdevice
-      - adafruit-extended-bus
-      - smbus2
+      - -e ./IrThermal/packages/irthermal[gui,i2c]
+      - -e "./teleimager[server]"

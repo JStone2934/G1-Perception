@@ -1,0 +1,31 @@
+[project]
+name = "irthermal"
+version = "0.1.0"
+description = "GY-MCU90640 / MLX90640 thermal imaging for Unitree G1"
+requires-python = ">=3.8,<3.14"
+dependencies = [
+    "numpy",
+    "pyserial",
+    "opencv-python-headless>=4.8",
+]
+
+[project.optional-dependencies]
+i2c = [
+    "adafruit-blinka",
+    "adafruit-circuitpython-mlx90640",
+    "adafruit-circuitpython-busdevice",
+    "adafruit-extended-bus",
+    "smbus2",
+]
+# dual_viewer 默认用 matplotlib 显示；若要用 OpenCV 窗口需仅保留 opencv-python（勿与 headless 共存）
+gui = ["matplotlib", "opencv-python>=4.8"]
+
+[tool.setuptools]
+package-dir = {"" = "src"}
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[build-system]
+requires = ["setuptools>=61.0", "wheel"]
+build-backend = "setuptools.build_meta"
