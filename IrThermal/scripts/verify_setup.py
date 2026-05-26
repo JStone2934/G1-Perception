@@ -67,6 +67,19 @@ def main() -> int:
         fail(f"irthermal: {e}")
         errors += 1
 
+    print("\n2b) AC010 内置运行时库")
+    try:
+        from irthermal.tiny1c import _sdk_lib_dir
+
+        lib_dir = _sdk_lib_dir()
+        ok(f"libiruvc 等 → {lib_dir}")
+        if not (lib_dir / "libiruvc.so").is_file():
+            fail(f"缺少 {lib_dir / 'libiruvc.so'}")
+            errors += 1
+    except Exception as e:
+        fail(f"AC010 vendor 库: {e}")
+        errors += 1
+
     print("\n3) teleimager 图传")
     try:
         import teleimager.image_server as srv

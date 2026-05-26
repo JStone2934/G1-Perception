@@ -12,12 +12,9 @@
 cd /home/unitree/JS_test/thermal/robot-perception
 conda activate thermal
 pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
-
-# SDK 解压路径（若不在默认位置）
-export IRTHERMAL_AC010_SDK=/home/unitree/JS_test/thermal/AC010_256_SDK/SINGLE_USB
 ```
 
-SDK 包：`/home/unitree/JS_test/thermal/AC010_256_SDK_V2.0.2.tar.gz` → 解压后使用 `SINGLE_USB/libs/linux/aarch64-linux-gnu_libs/`。
+AC010 运行时库（`libiruvc.so` 等）已内置在 `packages/irthermal/src/irthermal/vendor/ac010/`，**无需**在仓库外解压 SDK。仅当使用自定义库路径时设置 `IRTHERMAL_AC010_SDK`。
 
 ---
 
@@ -67,7 +64,8 @@ python IrThermal/scripts/thermal_zmq_server.py
 ```
 IrThermal/
 ├── packages/irthermal/src/irthermal/
-│   ├── tiny1c.py          # Tiny1C 驱动（ctypes + AC010 SDK）
+│   ├── tiny1c.py          # Tiny1C 驱动（ctypes + 内置 vendor 库）
+│   └── vendor/ac010/      # AC010 预编译 .so（aarch64 / x86）
 │   └── usb_setup.py       # 解绑 uvc / USB 权限
 ├── scripts/
 │   ├── thermal_view_tiny1c.py

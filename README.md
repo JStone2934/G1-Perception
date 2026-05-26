@@ -63,7 +63,7 @@ python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
 
 ## 图传（RGB + 热成像，单进程）
 
-`teleimager-server` 已支持 `type: thermal`（Tiny1C USB，AC010 SDK）。配置在 `thermal_camera` 槽位；启动前执行 `bash IrThermal/scripts/tiny1c_prepare.sh`（sudo）。
+`teleimager-server` 已支持 `type: thermal`（Tiny1C USB，AC010 库已内置在 irthermal 包内）。配置在 `thermal_camera` 槽位；启动前执行 `bash IrThermal/scripts/tiny1c_prepare.sh`（sudo）。
 
 ```bash
 conda activate thermal

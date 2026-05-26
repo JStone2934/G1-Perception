@@ -28,10 +28,13 @@ TINY1C_VID = 0x0BDA
 TINY1C_PID = 0x5840
 KEEP_CAM_SIDE_PREVIEW = 1
 
-_DEFAULT_SDK_ROOTS = (
-    Path("/home/unitree/JS_test/thermal/AC010_256_SDK/SINGLE_USB"),
-    Path(__file__).resolve().parents[5] / "AC010_256_SDK" / "SINGLE_USB",
-)
+_BUNDLED_LINUX_LIBS = Path(__file__).resolve().parent / "vendor" / "ac010" / "linux"
+
+_ARCH_LIB_SUBDIR = {
+    "aarch64": "aarch64-linux-gnu_libs",
+    "x86_64": "x86-linux_libs",
+    "amd64": "x86-linux_libs",
+}
 
 
 class _DevCfg(Structure):
@@ -60,23 +63,42 @@ class _CameraParam(Structure):
     ]
 
 
+def _arch_lib_subdir() -> str:
+    return _ARCH_LIB_SUBDIR.get(platform.machine(), "aarch64-linux-gnu_libs")
+
+
+def _resolve_lib_dir(root: Path, sub: str) -> Path | None:
+    """解析库目录：支持 bundled 子目录、SINGLE_USB 根或直接的 arch 目录。"""
+    candidates = (
+        root,
+        root / "libs" / "linux" / sub,
+        _BUNDLED_LINUX_LIBS / sub,
+    )
+    seen: set[Path] = set()
+    for cand in candidates:
+        key = cand.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        if (cand / "libiruvc.so").is_file():
+            return cand
+    return None
+
+
 def _sdk_lib_dir() -> Path:
+    sub = _arch_lib_subdir()
     env = os.environ.get("IRTHERMAL_AC010_SDK")
-    roots = [Path(env)] if env else []
-    roots.extend(_DEFAULT_SDK_ROOTS)
-    arch = platform.machine()
-    sub = {
-        "aarch64": "aarch64-linux-gnu_libs",
-        "x86_64": "x86-linux_libs",
-        "amd64": "x86-linux_libs",
-    }.get(arch, "aarch64-linux-gnu_libs")
-    for root in roots:
-        lib = root / "libs" / "linux" / sub
-        if (lib / "libiruvc.so").is_file():
+    if env:
+        lib = _resolve_lib_dir(Path(env), sub)
+        if lib is not None:
             return lib
+    lib = _resolve_lib_dir(_BUNDLED_LINUX_LIBS, sub)
+    if lib is not None:
+        return lib
     raise FileNotFoundError(
-        "未找到 AC010 SDK 库目录。请解压 AC010_256_SDK_V2.0.2.tar.gz 并设置:\n"
-        "  export IRTHERMAL_AC010_SDK=/path/to/AC010_256_SDK/SINGLE_USB"
+        f"未找到 AC010 运行时库（架构 {platform.machine()} → {sub}）。\n"
+        "请重新安装 irthermal: pip install -e ./IrThermal/packages/irthermal\n"
+        "或设置 IRTHERMAL_AC010_SDK 指向含 libiruvc.so 的目录。"
     )
 
 
