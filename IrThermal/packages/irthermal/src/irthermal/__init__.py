@@ -1,37 +1,20 @@
-"""GY-MCU90640 串口热成像与伪彩色可视化。"""
+"""Tiny1C / AC010 USB 热成像与可视化。"""
 
-from irthermal.mlx90640_serial import (
-    CMD_4HZ,
-    CMD_START,
-    CMD_STOP,
-    FRAME_SIZE,
-    HEADER,
-    drain_latest_frame,
-    extract_latest_frame,
-    find_port,
-    frame_to_temps,
-    open_serial,
-    poll_frame,
-    probe_ports,
-    sync_frame,
-    wake_gy_mcu,
+from irthermal.tiny1c import Tiny1CCamera, temp_raw_to_celsius
+from irthermal.usb_setup import (
+    detach_uvc_driver,
+    find_usb_device_path,
+    prepare_tiny1c,
+    rebind_uvc_driver,
 )
 from irthermal.visualize import temps_to_bgr
 
 __all__ = [
-    "CMD_4HZ",
-    "CMD_START",
-    "CMD_STOP",
-    "FRAME_SIZE",
-    "HEADER",
-    "drain_latest_frame",
-    "extract_latest_frame",
-    "find_port",
-    "frame_to_temps",
-    "open_serial",
-    "poll_frame",
-    "probe_ports",
-    "sync_frame",
-    "wake_gy_mcu",
+    "Tiny1CCamera",
+    "detach_uvc_driver",
+    "find_usb_device_path",
+    "prepare_tiny1c",
+    "rebind_uvc_driver",
+    "temp_raw_to_celsius",
     "temps_to_bgr",
 ]

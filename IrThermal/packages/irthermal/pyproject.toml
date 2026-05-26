@@ -1,7 +1,7 @@
 [project]
 name = "irthermal"
 version = "0.1.0"
-description = "GY-MCU90640 / MLX90640 thermal imaging for Unitree G1"
+description = "Tiny1C / AC010 USB thermal imaging for Unitree G1"
 requires-python = ">=3.8,<3.14"
 dependencies = [
     "numpy",

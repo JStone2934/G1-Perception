@@ -1,11 +1,13 @@
 # robot-perception
 
-Unitree G1 **RGB 图传 + MLX90640 热成像** 单体仓库（monorepo）。
+Unitree G1 **RGB 图传 + Tiny1C 热成像** 单体仓库（monorepo）。
 
-| 组件 | 路径 | 作用 |
-|------|------|------|
-| 热成像 | [`IrThermal/`](IrThermal/) | `packages/irthermal` 库 + CLI 脚本 |
-| 图传 | [`teleimager/`](teleimager/) | 多路相机 ZMQ / WebRTC（[上游文档](teleimager/README_zh-CN.md)） |
+
+| 组件  | 路径                           | 作用                                                    |
+| --- | ---------------------------- | ----------------------------------------------------- |
+| 热成像 | `[IrThermal/](IrThermal/)`   | `packages/irthermal` 库 + CLI 脚本                       |
+| 图传  | `[teleimager/](teleimager/)` | 多路相机 ZMQ / WebRTC（[上游文档](teleimager/README_zh-CN.md)） |
+
 
 架构说明：[docs/ARCHITECTURE.md](docs/ARCHITECTURE.md)  
 热成像排障：[IrThermal/docs/G1_TROUBLESHOOTING.md](IrThermal/docs/G1_TROUBLESHOOTING.md)
@@ -61,7 +63,7 @@ python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
 
 ## 图传（RGB + 热成像，单进程）
 
-`teleimager-server` 已支持 `type: thermal`（串口 MLX90640）。热成像配置在 **`left_wrist_camera`** 槽位，远端标准 `teleimager-client` 会自动显示 **Left Wrist Camera** 窗口，**无需改远端代码**。
+`teleimager-server` 已支持 `type: thermal`（Tiny1C USB，AC010 SDK）。配置在 `thermal_camera` 槽位；启动前执行 `bash IrThermal/scripts/tiny1c_prepare.sh`（sudo）。
 
 ```bash
 conda activate thermal
@@ -72,7 +74,7 @@ pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
 python3.8 -m pip install -e "./teleimager[server]"
 
 # G1 上启动（RGB + 热成像，单进程）
-./services/start_teleimager.sh
+teleimager-server
 # 或: python3.8 -m teleimager.image_server
 
 # 远端 PC（标准客户端，零改动）
@@ -82,14 +84,14 @@ teleimager-client --host <G1_IP>
 
 配置见 `teleimager/cam_config_server.yaml`：
 
-| 槽位 | 类型 | 端口 | 说明 |
-|------|------|------|------|
-| `head_camera` | `opencv` | ZMQ `55555` / WebRTC `60001` | RealSense RGB |
-| `left_wrist_camera` | `thermal` | ZMQ `55556` | 热成像（串口 `/dev/ttyUSB0`，约 2Hz） |
 
-`type: thermal` 可用字段：`serial_port`、`baud`、`use_init`、`overlay`、`jpeg_quality`、`image_shape`、`fps`、`settle_s`、`read_timeout`、`optional`。
+| 槽位                  | 类型        | 端口                           | 说明                           |
+| ------------------- | --------- | ---------------------------- | ---------------------------- |
+| `head_camera`       | `opencv`  | ZMQ `55555` / WebRTC `60001` | RealSense RGB                |
+| `thermal_camera`    | `thermal` | ZMQ `55559`                  | Tiny1C USB（约 15fps）       |
 
-热成像为 GY-MCU **请求-应答串口流**（每帧发 START），非 UVC 连续视频；G1 实测稳定约 **2fps**。若画面卡顿，检查 yaml 中 **`read_timeout` 勿为 0**，并确认已重装 `irthermal` 包。
+
+`type: thermal` 可用字段：`overlay`、`warmup_s`、`stream_index`、`jpeg_quality`、`image_shape`、`fps`、`optional`。
 
 **G1 启动前**（若 RGB 打不开或被占用）：
 
@@ -98,7 +100,7 @@ teleimager-client --host <G1_IP>
 lsof /dev/video4
 ```
 
-排障详见 [`teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md`](teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md)、[`IrThermal/docs/G1_TROUBLESHOOTING.md`](IrThermal/docs/G1_TROUBLESHOOTING.md)。
+排障详见 [teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md](teleimager/REALSENSE_RGB_OPENCV_TROUBLESHOOTING.md)、[IrThermal/README.md](IrThermal/README.md)。
 
 ---
 

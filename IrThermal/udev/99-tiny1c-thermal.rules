@@ -1,0 +1,2 @@
+# Tiny1C 热成像 (AC010 / 0bda:5840) — libusb 访问权限
+SUBSYSTEM=="usb", ATTR{idVendor}=="0bda", ATTR{idProduct}=="5840", MODE="0666"

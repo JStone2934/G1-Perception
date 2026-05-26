@@ -1,29 +1,39 @@
 # IrThermal（robot-perception 子目录）
 
-GY-MCU90640 / MLX90640 热成像：串口协议、采集与本地预览脚本。
+**Tiny1C** USB 热成像（AC010_256 SDK / `0bda:5840`）：采集、本地预览与 teleimager 图传。
 
-完整 monorepo 说明见上级 [../README.md](../README.md)。  
-排障：[docs/G1_TROUBLESHOOTING.md](docs/G1_TROUBLESHOOTING.md)
+完整 monorepo 说明见上级 [../README.md](../README.md)。
 
 ---
 
 ## 环境
 
-使用 monorepo 统一的 **conda `thermal`** 环境：
-
 ```bash
 cd /home/unitree/JS_test/thermal/robot-perception
 conda activate thermal
 pip install -e "./IrThermal/packages/irthermal[gui,i2c]"
+
+# SDK 解压路径（若不在默认位置）
+export IRTHERMAL_AC010_SDK=/home/unitree/JS_test/thermal/AC010_256_SDK/SINGLE_USB
 ```
 
-仅在本子目录工作时：
+SDK 包：`/home/unitree/JS_test/thermal/AC010_256_SDK_V2.0.2.tar.gz` → 解压后使用 `SINGLE_USB/libs/linux/aarch64-linux-gnu_libs/`。
+
+---
+
+## 首次使用（重要）
+
+Tiny1C 通过 **libusb** 访问，与内核 **uvcvideo** 冲突。每次上电或插拔后执行一次：
 
 ```bash
-cd /home/unitree/JS_test/thermal/robot-perception/IrThermal
-conda activate thermal
-pip install -e "./packages/irthermal[gui,i2c]"
-# 或: pip install -r requirements.txt
+bash IrThermal/scripts/tiny1c_prepare.sh   # 需 sudo，解绑 uvc + USB 权限
+```
+
+可选：安装 udev 规则后无需每次 chmod：
+
+```bash
+sudo cp IrThermal/udev/99-tiny1c-thermal.rules /etc/udev/rules.d/
+sudo udevadm control --reload && sudo udevadm trigger
 ```
 
 ---
@@ -34,43 +44,38 @@ pip install -e "./packages/irthermal[gui,i2c]"
 conda activate thermal
 cd /home/unitree/JS_test/thermal/robot-perception
 
-python IrThermal/scripts/capture_serial.py --port /dev/ttyUSB0
-python IrThermal/scripts/thermal_view_serial.py --port /dev/ttyUSB0
-python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
+# 仅热成像预览
+python IrThermal/scripts/thermal_view_tiny1c.py
+
+# 热成像 + RGB 摄像头
+python IrThermal/scripts/dual_viewer.py --camera 4
+
+# ZMQ 发布（端口见 cam_config_server.yaml）
+python IrThermal/scripts/thermal_zmq_server.py
 ```
-
-在 `IrThermal/` 目录内（路径可省略前缀）：
-
-```bash
-./activate.sh python scripts/capture_serial.py --port /dev/ttyUSB0
-```
-
-默认输出：`output/mlx90640_latest.png`（相对本目录）
 
 ---
 
-## 图传集成（teleimager `type: thermal`）
+## 图传（teleimager `type: thermal`）
 
-monorepo 内通过 `teleimager/cam_config_server.yaml` 的 `left_wrist_camera` 槽位接入。串口读帧使用 `poll_frame(..., read_timeout=...)`；**勿将串口 `timeout` 设为 0**，否则 ZMQ 热图会频繁卡顿。实测帧率约 **2Hz**，详见 [../docs/ARCHITECTURE.md](../docs/ARCHITECTURE.md)。
+`teleimager/cam_config_server.yaml` 中 `thermal_camera` 槽位。启动 image server 前同样执行 `tiny1c_prepare.sh`。
+
+---
 
 ## 目录结构
 
 ```
 IrThermal/
-├── packages/irthermal/
+├── packages/irthermal/src/irthermal/
+│   ├── tiny1c.py          # Tiny1C 驱动（ctypes + AC010 SDK）
+│   └── usb_setup.py       # 解绑 uvc / USB 权限
 ├── scripts/
-│   ├── capture_serial.py
-│   ├── thermal_view_serial.py
+│   ├── thermal_view_tiny1c.py
+│   ├── tiny1c_prepare.sh
 │   ├── dual_viewer.py
-│   ├── dual_zmq_viewer.py      # 方案 2：RGB+热成像 ZMQ 预览
-│   ├── thermal_zmq_server.py   # 方案 2：独立热成像 ZMQ 发布
-│   ├── thermal_zmq_client.py
-│   ├── thermal_view.py
-│   ├── i2c_scan.py
-│   └── verify_setup.py
-├── docs/
-├── output/
-├── environment.yml      # 仅热成像依赖（name: thermal）
-├── requirements.txt
-└── activate.sh
+│   └── thermal_zmq_server.py
+├── udev/99-tiny1c-thermal.rules
+└── docs/G1_TROUBLESHOOTING.md
 ```
+
+旧版 GY-MCU90640 串口脚本（`thermal_view_serial.py` 等）已弃用，仅作参考保留。

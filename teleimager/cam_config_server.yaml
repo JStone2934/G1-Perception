@@ -59,7 +59,8 @@ depth_camera:
   serial_number: null
 
 # =====================================================
-# 热成像 — GY-MCU90640 串口（type: thermal）
+# 热成像 — Tiny1C USB（type: thermal，AC010 SDK）
+# 启动前: bash IrThermal/scripts/tiny1c_prepare.sh
 # 远端 teleimager-client 会显示为 "Thermal Camera" 窗口
 # =====================================================
 thermal_camera:
@@ -69,13 +70,10 @@ thermal_camera:
   optional: true              # 热成像未接/超时时仍启动 RGB
 
   type: thermal
-  serial_port: /dev/ttyUSB0
-  baud: 460800
-  use_init: false
   overlay: true
-  settle_s: 0.12          # START 后等待模块出帧（秒）
-  read_timeout: 1.0       # 串口读帧超时；勿设 0
+  warmup_s: 3.0             # 开流预热（秒）
+  stream_index: 1           # 1=256x384 图像+温度；0=仅 256x192 图像
 
   image_shape: [480, 640]
   binocular: false
-  fps: 2                  # GY-MCU 实测约 2Hz；设过高会空转
+  fps: 15

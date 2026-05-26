@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""双窗口实时预览：GY-MCU90640 热成像 + USB 摄像头（供远程桌面查看）。"""
+"""双窗口实时预览：Tiny1C 热成像 + USB 摄像头（供远程桌面查看）。"""
 
 from __future__ import annotations
 
@@ -17,26 +17,15 @@ import _bootstrap  # noqa: E402, F401
 
 import cv2
 import numpy as np
-import serial
+from irthermal import Tiny1CCamera
 
-from irthermal import (
-    CMD_STOP,
-    frame_to_temps,
-    open_serial,
-    poll_frame,
-    sync_frame,
-    temps_to_bgr,
-    wake_gy_mcu,
-)
-
-THERMAL_WIN = "MLX90640 Thermal"
+THERMAL_WIN = "Tiny1C Thermal"
 CAMERA_WIN = "Camera"
 
 
 def parse_args() -> argparse.Namespace:
     p = argparse.ArgumentParser(description="热成像 + 摄像头双窗口预览")
-    p.add_argument("--port", default="/dev/ttyUSB0", help="热成像串口")
-    p.add_argument("--baud", type=int, default=460800)
+    p.add_argument("--warmup", type=float, default=3.0, help="Tiny1C 开流预热秒数")
     p.add_argument("--camera", type=int, default=None, help="摄像头索引（对应 /dev/videoN）")
     p.add_argument(
         "--device",
@@ -49,12 +38,11 @@ def parse_args() -> argparse.Namespace:
         help="列出可读帧的 V4L2 设备后退出",
     )
     p.add_argument("--thermal-size", default="640,480", help="热图窗口显示尺寸 W,H")
-    p.add_argument("--init", action="store_true", help="115200 固件：发送初始化命令")
     p.add_argument(
         "--thermal-hz",
         type=float,
-        default=8.0,
-        help="热图显示刷新上限（Hz），模块约 4Hz 上报",
+        default=15.0,
+        help="热图显示刷新上限（Hz）",
     )
     p.add_argument(
         "--display",
@@ -235,53 +223,36 @@ class ThermalState:
 
 
 def thermal_reader(
-    ser: serial.Serial,
+    cam: Tiny1CCamera,
     state: ThermalState,
     tw: int,
     th: int,
     stop: threading.Event,
     poll_interval: float,
 ) -> None:
-    last_wake = time.time()
     while not stop.is_set():
         try:
-            ser.timeout = 2
-            raw = poll_frame(ser, settle_s=0.08)
-            ser.timeout = 0
-            ta, temps = frame_to_temps(raw)
-        except (TimeoutError, ValueError, serial.SerialException):
-            if time.time() - last_wake > 2.0:
-                try:
-                    wake_gy_mcu(ser, 460800)
-                    last_wake = time.time()
-                except Exception:
-                    pass
-            time.sleep(0.15)
+            bgr, label = cam.read_bgr(tw, th)
+            if label:
+                label = f"#{state.seq + 1}  {label}"
+        except (TimeoutError, RuntimeError):
+            time.sleep(0.1)
             continue
-
-        bgr = temps_to_bgr(temps, tw, th)
-        label = (
-            f"#{state.seq + 1}  Ta={ta:.1f}C  "
-            f"min={temps.min():.1f}C  max={temps.max():.1f}C"
-        )
         with state.lock:
             state.bgr = bgr
-            state.label = label
+            state.label = label or state.label
             state.seq += 1
             state.stale_since = time.time()
-        time.sleep(max(poll_interval, 0.05))
+        time.sleep(max(poll_interval, 0.02))
 
 
 def run_matplotlib_loop(
     cap: cv2.VideoCapture,
     state: ThermalState,
-    ser: serial.Serial,
     stop: threading.Event,
     tw: int,
     th: int,
     frame_interval: float,
-    port: str,
-    baud: int,
     poll_interval: float,
 ) -> None:
     import matplotlib.pyplot as plt
@@ -307,7 +278,7 @@ def run_matplotlib_loop(
     ax_cam.set_title("Camera")
     ax_cam.axis("off")
 
-    print(f"[thermal] {port} @ {baud}（约 {1/poll_interval:.1f} Hz）")
+    print(f"[thermal] Tiny1C（约 {1/poll_interval:.1f} Hz）")
     print("[hint] 关闭 matplotlib 窗口退出")
 
     last_thermal_draw = 0.0
@@ -335,13 +306,10 @@ def run_matplotlib_loop(
 def run_opencv_loop(
     cap: cv2.VideoCapture,
     state: ThermalState,
-    ser: serial.Serial,
     stop: threading.Event,
     tw: int,
     th: int,
     frame_interval: float,
-    port: str,
-    baud: int,
     poll_interval: float,
 ) -> None:
     if not cv2_has_gui():
@@ -359,7 +327,7 @@ def run_opencv_loop(
     cv2.resizeWindow(CAMERA_WIN, 960, 720)
 
     placeholder = np.zeros((th, tw, 3), dtype=np.uint8)
-    print(f"[thermal] {port} @ {baud}（约 {1/poll_interval:.1f} Hz）")
+    print(f"[thermal] Tiny1C（约 {1/poll_interval:.1f} Hz）")
     print("[hint] 焦点在窗口上时按 q 退出")
 
     last_thermal_draw = 0.0
@@ -424,23 +392,13 @@ def main() -> int:
         )
         return 1
 
+    cam = Tiny1CCamera(warmup_s=args.warmup)
     try:
-        ser = open_serial(args.port, args.baud, use_init=args.init, timeout=0)
-    except serial.SerialException as e:
-        print(f"[thermal] 无法打开 {args.port}: {e}", file=sys.stderr)
-        cap.release()
-        return 1
-
-    try:
-        ser.timeout = 2
-        raw = sync_frame(ser)
-        ser.timeout = 0
-        ta, temps = frame_to_temps(raw)
-        init_bgr = temps_to_bgr(temps, tw, th)
-        init_label = f"Ta={ta:.1f}C  min={temps.min():.1f}C  max={temps.max():.1f}C"
-    except (TimeoutError, ValueError) as e:
-        print(f"[thermal] 首帧失败: {e}", file=sys.stderr)
-        ser.close()
+        cam.open()
+        init_bgr, init_label = cam.read_bgr(tw, th)
+    except Exception as e:
+        print(f"[thermal] 打开/首帧失败: {e}", file=sys.stderr)
+        print("请先: bash IrThermal/scripts/tiny1c_prepare.sh", file=sys.stderr)
         cap.release()
         return 1
 
@@ -450,10 +408,10 @@ def main() -> int:
     state.seq = 1
 
     stop = threading.Event()
-    poll_interval = max(0.25, 1.0 / max(args.thermal_hz, 0.5))
+    poll_interval = max(0.02, 1.0 / max(args.thermal_hz, 1.0))
     worker = threading.Thread(
         target=thermal_reader,
-        args=(ser, state, tw, th, stop, poll_interval),
+        args=(cam, state, tw, th, stop, poll_interval),
         daemon=True,
     )
     worker.start()
@@ -469,36 +427,26 @@ def main() -> int:
             run_matplotlib_loop(
                 cap,
                 state,
-                ser,
                 stop,
                 tw,
                 th,
                 frame_interval,
-                args.port,
-                args.baud,
                 poll_interval,
             )
         else:
             run_opencv_loop(
                 cap,
                 state,
-                ser,
                 stop,
                 tw,
                 th,
                 frame_interval,
-                args.port,
-                args.baud,
                 poll_interval,
             )
     finally:
         stop.set()
         worker.join(timeout=1.0)
-        try:
-            ser.write(CMD_STOP)
-        except Exception:
-            pass
-        ser.close()
+        cam.close()
         cap.release()
 
     return 0

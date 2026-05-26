@@ -42,10 +42,10 @@ import fractions
 from typing import Dict, List, Optional, Tuple, Any
 import logging_mp
 try:
-    logging_mp.basic_config(level=logging_mp.INFO)
+    logging_mp.basicConfig(level=logging_mp.INFO)
 except RuntimeError:
     pass
-logger_mp = logging_mp.get_logger(__name__)
+logger_mp = logging_mp.getLogger(__name__)
 
 # ========================================================
 # cam_config_server.yaml path
@@ -1900,13 +1900,11 @@ class OpenCVCamera(BaseCamera):
         logger_mp.info(f"[OpenCVCamera] Released {self._cam_topic}")
 
 class ThermalCamera(BaseCamera):
-    """GY-MCU90640 / MLX90640 串口热成像（依赖 irthermal 包）。"""
+    """Tiny1C USB 热成像（AC010 SDK / irthermal.tiny1c）。"""
 
     def __init__(
         self,
         cam_topic,
-        serial_port,
-        baud,
         img_shape,
         fps,
         enable_zmq=True,
@@ -1914,43 +1912,24 @@ class ThermalCamera(BaseCamera):
         enable_webrtc=False,
         webrtc_port=66666,
         webrtc_codec=None,
-        use_init=False,
         overlay=True,
         jpeg_quality=85,
-        settle_s=0.12,
-        read_timeout=1.0,
+        warmup_s=3.0,
+        stream_index=1,
+        **_legacy_kwargs,
     ):
         try:
-            from irthermal import (
-                CMD_STOP,
-                frame_to_temps,
-                open_serial,
-                poll_frame,
-                sync_frame,
-                temps_to_bgr,
-                wake_gy_mcu,
-            )
+            from irthermal import Tiny1CCamera
         except ImportError as exc:
             raise ImportError(
                 "[ThermalCamera] irthermal 未安装。请执行: "
                 "pip install -e ./IrThermal/packages/irthermal"
             ) from exc
 
-        self._CMD_STOP = CMD_STOP
-        self._frame_to_temps = frame_to_temps
-        self._open_serial = open_serial
-        self._poll_frame = poll_frame
-        self._sync_frame = sync_frame
-        self._temps_to_bgr = temps_to_bgr
-        self._wake_gy_mcu = wake_gy_mcu
-
         super().__init__(
             cam_topic, img_shape, fps, enable_zmq, zmq_port,
             enable_webrtc, webrtc_port, webrtc_codec,
         )
-        self._serial_port = serial_port
-        self._baud = baud
-        self._use_init = use_init
         self._overlay = overlay
         self._width = img_shape[1]
         self._height = img_shape[0]
@@ -1958,85 +1937,44 @@ class ThermalCamera(BaseCamera):
             int(cv2.IMWRITE_JPEG_QUALITY),
             max(1, min(int(jpeg_quality), 100)),
         ]
-        self._settle_s = max(float(settle_s), 0.05)
-        self._read_timeout = max(float(read_timeout), 0.3)
-        self._last_wake = time.time()
         self._fail_streak = 0
-        self.ser = None
+        self._cam = Tiny1CCamera(
+            stream_index=int(stream_index),
+            warmup_s=float(warmup_s),
+            overlay=overlay,
+        )
 
         try:
-            self.ser = self._open_serial(
-                serial_port, baud, use_init=use_init, timeout=self._read_timeout,
-            )
-            ta, temps = self._acquire_first_frame()
+            self._cam.open()
+            _, temps, ta = self._cam.read()
+            bgr, _ = self._cam.read_bgr(self._width, self._height, overlay=overlay)
             logger_mp.info(
-                "[ThermalCamera] %s 首帧 OK @ %s  Ta=%.1fC",
-                cam_topic, serial_port, ta,
+                "[ThermalCamera] %s Tiny1C 首帧 OK  Ta=%.1fC  "
+                "min=%.1fC max=%.1fC native=%s",
+                cam_topic, ta, float(temps.min()), float(temps.max()),
+                self._cam.native_resolution,
             )
-            self._publish_bgr(self._render_bgr(temps, ta))
+            self._publish_bgr(bgr)
             self._ready.set()
         except Exception as exc:
-            if self.ser is not None:
-                try:
-                    self.ser.close()
-                except Exception:
-                    pass
-                self.ser = None
+            try:
+                self._cam.close()
+            except Exception:
+                pass
             raise RuntimeError(
-                f"[ThermalCamera] Failed to initialize {cam_topic} on {serial_port}: {exc}"
+                f"[ThermalCamera] Failed to initialize {cam_topic} (Tiny1C): {exc}\n"
+                "请先: bash IrThermal/scripts/tiny1c_prepare.sh"
             ) from exc
 
         logger_mp.info(str(self))
 
-    def _acquire_first_frame(self, max_attempts: int = 5):
-        """GY-MCU 非连续流：须 poll_frame（发 START）取首帧，sync_frame 易超时。"""
-        last_err = None
-        for attempt in range(max_attempts):
-            try:
-                if attempt > 0:
-                    self._wake_gy_mcu(self.ser, self._baud)
-                    time.sleep(0.2)
-                raw = self._poll_frame(
-                    self.ser,
-                    settle_s=self._settle_s,
-                    read_timeout=self._read_timeout,
-                )
-                return self._frame_to_temps(raw)
-            except Exception as exc:
-                last_err = exc
-                logger_mp.warning(
-                    "[ThermalCamera] %s 首帧尝试 %d/%d 失败: %s",
-                    self._cam_topic, attempt + 1, max_attempts, exc,
-                )
-                time.sleep(0.3)
-        raise RuntimeError(
-            f"[ThermalCamera] {self._cam_topic} 首帧失败（{max_attempts} 次）: {last_err}"
-        ) from last_err
-
     def __str__(self):
         return (
-            f"[ThermalCamera: {self._cam_topic}] {self._serial_port} @ {self._baud} "
+            f"[ThermalCamera: {self._cam_topic}] Tiny1C USB "
             f"{self._img_shape[0]}x{self._img_shape[1]} @ {self._fps} FPS.\n"
             f"ZMQ: {'enabled, zmq_port=' + str(self._zmq_port) if self._enable_zmq else 'disabled'}; "
             f"WebRTC: {'enabled, webrtc_port=' + str(self._webrtc_port) if self._enable_webrtc else 'disabled'}"
         )
-
-    def _render_bgr(self, temps: np.ndarray, ta: float) -> np.ndarray:
-        bgr = self._temps_to_bgr(temps, self._width, self._height)
-        if self._overlay:
-            label = (
-                f"Ta={ta:.1f}C  min={temps.min():.1f}C  max={temps.max():.1f}C"
-            )
-            cv2.putText(
-                bgr,
-                label,
-                (10, 28),
-                cv2.FONT_HERSHEY_SIMPLEX,
-                0.65,
-                (255, 255, 255),
-                2,
-            )
-        return bgr
 
     def _publish_bgr(self, bgr: np.ndarray) -> None:
         if self._enable_webrtc:
@@ -2051,16 +1989,11 @@ class ThermalCamera(BaseCamera):
                 ))
 
     def _update_frame(self):
-        if self.ser is None:
-            return
         try:
-            raw = self._poll_frame(
-                self.ser,
-                settle_s=self._settle_s,
-                read_timeout=self._read_timeout,
+            bgr, _ = self._cam.read_bgr(
+                self._width, self._height, overlay=self._overlay
             )
-            ta, temps = self._frame_to_temps(raw)
-            self._publish_bgr(self._render_bgr(temps, ta))
+            self._publish_bgr(bgr)
             if not self._ready.is_set():
                 self._ready.set()
             self._fail_streak = 0
@@ -2071,24 +2004,12 @@ class ThermalCamera(BaseCamera):
                     "[ThermalCamera] %s 连续 %d 帧失败: %s",
                     self._cam_topic, self._fail_streak, exc,
                 )
-            if time.time() - self._last_wake > 2.0:
-                try:
-                    self._wake_gy_mcu(self.ser, self._baud)
-                    self._last_wake = time.time()
-                except Exception:
-                    pass
 
     def release(self):
-        if self.ser is not None:
-            try:
-                self.ser.write(self._CMD_STOP)
-            except Exception:
-                pass
-            try:
-                self.ser.close()
-            except Exception:
-                pass
-            self.ser = None
+        try:
+            self._cam.close()
+        except Exception:
+            pass
         logger_mp.info(f"[ThermalCamera] Released {self._cam_topic}")
 
 # ========================================================
@@ -2261,19 +2182,14 @@ class ImageServer:
                 elif cam_type == "thermal":
                     if img_shape is None:
                         img_shape = [480, 640]
-                    serial_port = str(cam_cfg.get("serial_port", "/dev/ttyUSB0"))
-                    baud = int(cam_cfg.get("baud", 460800))
-                    use_init = bool(cam_cfg.get("use_init", False))
                     overlay = bool(cam_cfg.get("overlay", True))
                     jpeg_quality = int(cam_cfg.get("jpeg_quality", 85))
-                    settle_s = float(cam_cfg.get("settle_s", 0.12))
-                    read_timeout = float(cam_cfg.get("read_timeout", 1.0))
+                    warmup_s = float(cam_cfg.get("warmup_s", 3.0))
+                    stream_index = int(cam_cfg.get("stream_index", 1))
                     optional = bool(cam_cfg.get("optional", True))
                     try:
                         self._cameras[cam_topic] = ThermalCamera(
                             cam_topic,
-                            serial_port,
-                            baud,
                             img_shape,
                             fps,
                             enable_zmq,
@@ -2281,11 +2197,10 @@ class ImageServer:
                             enable_webrtc,
                             webrtc_port,
                             webrtc_codec,
-                            use_init=use_init,
                             overlay=overlay,
                             jpeg_quality=jpeg_quality,
-                            settle_s=settle_s,
-                            read_timeout=read_timeout,
+                            warmup_s=warmup_s,
+                            stream_index=stream_index,
                         )
                     except Exception as exc:
                         if optional:
