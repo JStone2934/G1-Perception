@@ -1,0 +1,123 @@
+// 镜头总成一体化平铺背板 (Camera + FPC + Mainboard)
+$fn = 64; 
+
+// ==========================================
+// 核心可调参数 (请根据实物微调)
+// ==========================================
+// 镜头中心到绿色主板中心的垂直距离 (根据 32.5mm 排线推算)
+cam_to_pcb_dist = 4.0; 
+
+// 绿色主板 (22x22) 的 4 个固定孔间距 (推算为 18x18mm 间距)
+pcb_hole_pitch = 18.0;  
+
+// ==========================================
+// 1. 背板全局参数
+// ==========================================
+plate_width = 28.0;      // 背板统一宽度
+plate_thickness = 3.0;   // 背板底座厚度
+
+// 计算背板的上下边界
+plate_y_top = 12.0;      // 顶部留白
+plate_y_bottom = -cam_to_pcb_dist - 15.0; // 底部包容主板并留白
+plate_length = plate_y_top - plate_y_bottom;
+
+// ==========================================
+// 2. 镜头模组参数 (光学中心 0,0, 维持原高精度定位)
+// ==========================================
+cam_pin_x = 8.7;         // X轴：17.4 / 2
+cam_pin_y_top = 4.9;     // 顶部缺口坐标
+cam_pin_y_bottom = -2.1; // 底部缺口坐标
+cam_pin_dia = 1.8;       // 定位柱直径
+cam_pin_height = 1.5;    // 定位柱高度
+
+cam_pocket_w = 15.5;     // 镜头背部元件避空槽宽
+cam_pocket_y_max = 7.0;  // 避空槽上边界
+cam_pocket_y_min = -11.0;// 避空槽下边界 (排线插座处)
+cam_pocket_depth = 1.5;  // 避空槽深度
+
+// ==========================================
+// 3. FPC 柔性排线走线槽
+// ==========================================
+fpc_w = 14.0;            // 槽宽 (排线宽 12mm，留 1mm 余量)
+fpc_y_max = cam_pocket_y_min; // 连接镜头槽
+fpc_y_min = -cam_to_pcb_dist + 11.0; // 连接到主板插座处
+fpc_depth = 1.0;         // 走线槽深度 (凹陷，保护排线)
+
+// ==========================================
+// 4. 绿色主板 (TINY1C V2.0) 参数
+// ==========================================
+pcb_center_y = -cam_to_pcb_dist; 
+pcb_size = 22.0;
+pcb_pocket_depth = 1.0;  // 主板下方整体避空深度 (防焊点短路)
+pcb_boss_dia = 4.0;      // 主板 4 角的垫高支撑柱直径
+pcb_hole_dia = 2.0;      // 主板固定孔直径 (适配 M2 自攻螺丝)
+
+// 外围系统安装孔 (将整个背板固定到机箱上)
+base_hole_x = plate_width/2 - 2.5; 
+base_hole_dia = 2.5;
+
+
+// ==========================================
+// 建模逻辑构建
+// ==========================================
+module unified_backplate() {
+    difference() {
+        union() {
+            // A. 挖好各个避空槽的底板
+            difference() {
+                // 主体方块
+                translate([0, (plate_y_top + plate_y_bottom)/2, -plate_thickness/2])
+                cube([plate_width, plate_length, plate_thickness], center=true);
+
+                // 挖去 1: 镜头背部 IC 避空槽
+                translate([0, (cam_pocket_y_max + cam_pocket_y_min)/2, -cam_pocket_depth/2 + 0.01])
+                cube([cam_pocket_w, cam_pocket_y_max - cam_pocket_y_min, cam_pocket_depth], center=true);
+
+                // 挖去 2: FPC 排线保护槽
+                translate([0, (fpc_y_max + fpc_y_min)/2, -fpc_depth/2 + 0.01])
+                cube([fpc_w, fpc_y_max - fpc_y_min + 0.1, fpc_depth], center=true);
+
+                // 挖去 3: 主板背部整体避空槽 (防止焊点顶底)
+                translate([0, pcb_center_y, -pcb_pocket_depth/2 + 0.01])
+                cube([pcb_size + 1, pcb_size + 1, pcb_pocket_depth], center=true);
+            }
+
+            // B. 加上向上的固定特征
+            // 1. 镜头定位柱 (Z=0 向上突出)
+            for (x = [-cam_pin_x, cam_pin_x]) {
+                for (y = [cam_pin_y_top, cam_pin_y_bottom]) {
+                    translate([x, y, 0]) 
+                    cylinder(d=cam_pin_dia, h=cam_pin_height);
+                }
+            }
+
+            // 2. 主板四角的垫高支撑柱 (填补在避空槽里，让主板四角刚好平齐在 Z=0)
+            for (x = [-pcb_hole_pitch/2, pcb_hole_pitch/2]) {
+                for (y = [pcb_center_y - pcb_hole_pitch/2, pcb_center_y + pcb_hole_pitch/2]) {
+                    translate([x, y, -pcb_pocket_depth])
+                    cylinder(d=pcb_boss_dia, h=pcb_pocket_depth);
+                }
+            }
+        }
+
+        // C. 全局通孔切割 (贯穿整个板子)
+        // 1. 切出主板的 4 个固定螺丝孔 (M2)
+        for (x = [-pcb_hole_pitch/2, pcb_hole_pitch/2]) {
+            for (y = [pcb_center_y - pcb_hole_pitch/2, pcb_center_y + pcb_hole_pitch/2]) {
+                translate([x, y, 0])
+                cylinder(d=pcb_hole_dia, h=plate_thickness*3, center=true);
+            }
+        }
+
+        // 2. 切出整个一体板的四个外部安装孔 (四角边缘)
+        for (x = [-base_hole_x, base_hole_x]) {
+            for (y = [plate_y_top - 3.5, plate_y_bottom + 3.5]) {
+                translate([x, y, 0])
+                cylinder(d=base_hole_dia, h=plate_thickness*3, center=true);
+            }
+        }
+    }
+}
+
+// 渲染最终模型
+unified_backplate();
