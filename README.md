@@ -88,7 +88,7 @@ teleimager-client --host <G1_IP>
 | 槽位                  | 类型        | 端口                           | 说明                           |
 | ------------------- | --------- | ---------------------------- | ---------------------------- |
 | `head_camera`       | `opencv`  | ZMQ `55555` / WebRTC `60001` | RealSense RGB                |
-| `thermal_camera`    | `thermal` | ZMQ `55559`                  | Tiny1C USB（约 15fps）       |
+| `thermal_camera`    | `thermal` | ZMQ `55559`                  | Tiny1C USB（25fps）          |
 
 
 `type: thermal` 可用字段：`overlay`、`warmup_s`、`stream_index`、`jpeg_quality`、`image_shape`、`fps`、`optional`。

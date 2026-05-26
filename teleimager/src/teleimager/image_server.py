@@ -1940,6 +1940,7 @@ class ThermalCamera(BaseCamera):
         self._fail_streak = 0
         self._cam = Tiny1CCamera(
             stream_index=int(stream_index),
+            fps=int(fps),
             warmup_s=float(warmup_s),
             overlay=overlay,
         )
@@ -1950,9 +1951,9 @@ class ThermalCamera(BaseCamera):
             bgr, _ = self._cam.read_bgr(self._width, self._height, overlay=overlay)
             logger_mp.info(
                 "[ThermalCamera] %s Tiny1C 首帧 OK  Ta=%.1fC  "
-                "min=%.1fC max=%.1fC native=%s",
+                "min=%.1fC max=%.1fC native=%s stream_fps=%d",
                 cam_topic, ta, float(temps.min()), float(temps.max()),
-                self._cam.native_resolution,
+                self._cam.native_resolution, self._cam.stream_fps,
             )
             self._publish_bgr(bgr)
             self._ready.set()

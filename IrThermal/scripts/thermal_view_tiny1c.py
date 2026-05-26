@@ -54,7 +54,10 @@ def main() -> int:
         )
         return 1
 
-    print(f"[tiny1c] 分辨率 {cam.native_resolution[0]}x{cam.native_resolution[1]}")
+    print(
+        f"[tiny1c] 分辨率 {cam.native_resolution[0]}x{cam.native_resolution[1]}  "
+        f"stream_fps={cam.stream_fps}"
+    )
     print("[hint] 按 q 退出")
 
     display = args.display

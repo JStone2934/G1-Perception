@@ -33,7 +33,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument("--zmq-port", type=int, default=55556, help="ZMQ 端口")
     p.add_argument("--width", type=int, default=640, help="输出宽度")
     p.add_argument("--height", type=int, default=480, help="输出高度")
-    p.add_argument("--fps", type=float, default=15.0, help="发布帧率上限")
+    p.add_argument("--fps", type=float, default=25.0, help="发布帧率上限")
     p.add_argument("--warmup", type=float, default=3.0, help="开流预热秒数")
     p.add_argument("--jpeg-quality", type=int, default=85)
     p.add_argument(
@@ -49,7 +49,11 @@ def main() -> int:
     interval = max(1.0 / max(args.fps, 0.5), 0.02)
     encode_params = [int(cv2.IMWRITE_JPEG_QUALITY), max(1, min(args.jpeg_quality, 100))]
 
-    cam = Tiny1CCamera(warmup_s=args.warmup, overlay=args.overlay)
+    cam = Tiny1CCamera(
+        warmup_s=args.warmup,
+        overlay=args.overlay,
+        fps=int(args.fps),
+    )
     try:
         cam.open()
         bgr, temps, ta = cam.read()

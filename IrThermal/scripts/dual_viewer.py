@@ -41,7 +41,7 @@ def parse_args() -> argparse.Namespace:
     p.add_argument(
         "--thermal-hz",
         type=float,
-        default=15.0,
+        default=25.0,
         help="热图显示刷新上限（Hz）",
     )
     p.add_argument(
@@ -392,7 +392,7 @@ def main() -> int:
         )
         return 1
 
-    cam = Tiny1CCamera(warmup_s=args.warmup)
+    cam = Tiny1CCamera(warmup_s=args.warmup, fps=int(args.thermal_hz))
     try:
         cam.open()
         init_bgr, init_label = cam.read_bgr(tw, th)
