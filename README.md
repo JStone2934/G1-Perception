@@ -63,7 +63,7 @@ python IrThermal/scripts/dual_viewer.py --port /dev/ttyUSB0 --camera 4
 
 ## 图传（RGB + 热成像，单进程）
 
-`teleimager-server` 已支持 `type: thermal`（Tiny1C USB，AC010 SDK）。配置在 `thermal_camera` 槽位；启动前执行 `bash IrThermal/scripts/tiny1c_prepare.sh`（sudo）。
+`teleimager-server` 已支持 `type: thermal`（Tiny1C USB，AC010 库已内置在 irthermal 包内）。配置在 `thermal_camera` 槽位；启动前执行 `bash IrThermal/scripts/tiny1c_prepare.sh`（sudo）。
 
 ```bash
 conda activate thermal
@@ -88,7 +88,7 @@ teleimager-client --host <G1_IP>
 | 槽位                  | 类型        | 端口                           | 说明                           |
 | ------------------- | --------- | ---------------------------- | ---------------------------- |
 | `head_camera`       | `opencv`  | ZMQ `55555` / WebRTC `60001` | RealSense RGB                |
-| `thermal_camera`    | `thermal` | ZMQ `55559`                  | Tiny1C USB（约 15fps）       |
+| `thermal_camera`    | `thermal` | ZMQ `55559`                  | Tiny1C USB（25fps）          |
 
 
 `type: thermal` 可用字段：`overlay`、`warmup_s`、`stream_index`、`jpeg_quality`、`image_shape`、`fps`、`optional`。

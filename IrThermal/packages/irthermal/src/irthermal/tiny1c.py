@@ -28,10 +28,13 @@ TINY1C_VID = 0x0BDA
 TINY1C_PID = 0x5840
 KEEP_CAM_SIDE_PREVIEW = 1
 
-_DEFAULT_SDK_ROOTS = (
-    Path("/home/unitree/JS_test/thermal/AC010_256_SDK/SINGLE_USB"),
-    Path(__file__).resolve().parents[5] / "AC010_256_SDK" / "SINGLE_USB",
-)
+_BUNDLED_LINUX_LIBS = Path(__file__).resolve().parent / "vendor" / "ac010" / "linux"
+
+_ARCH_LIB_SUBDIR = {
+    "aarch64": "aarch64-linux-gnu_libs",
+    "x86_64": "x86-linux_libs",
+    "amd64": "x86-linux_libs",
+}
 
 
 class _DevCfg(Structure):
@@ -60,24 +63,58 @@ class _CameraParam(Structure):
     ]
 
 
-def _sdk_lib_dir() -> Path:
-    env = os.environ.get("IRTHERMAL_AC010_SDK")
-    roots = [Path(env)] if env else []
-    roots.extend(_DEFAULT_SDK_ROOTS)
-    arch = platform.machine()
-    sub = {
-        "aarch64": "aarch64-linux-gnu_libs",
-        "x86_64": "x86-linux_libs",
-        "amd64": "x86-linux_libs",
-    }.get(arch, "aarch64-linux-gnu_libs")
-    for root in roots:
-        lib = root / "libs" / "linux" / sub
-        if (lib / "libiruvc.so").is_file():
-            return lib
-    raise FileNotFoundError(
-        "未找到 AC010 SDK 库目录。请解压 AC010_256_SDK_V2.0.2.tar.gz 并设置:\n"
-        "  export IRTHERMAL_AC010_SDK=/path/to/AC010_256_SDK/SINGLE_USB"
+def _arch_lib_subdir() -> str:
+    return _ARCH_LIB_SUBDIR.get(platform.machine(), "aarch64-linux-gnu_libs")
+
+
+def _resolve_lib_dir(root: Path, sub: str) -> Path | None:
+    """解析库目录：支持 bundled 子目录、SINGLE_USB 根或直接的 arch 目录。"""
+    candidates = (
+        root,
+        root / "libs" / "linux" / sub,
+        _BUNDLED_LINUX_LIBS / sub,
     )
+    seen: set[Path] = set()
+    for cand in candidates:
+        key = cand.resolve()
+        if key in seen:
+            continue
+        seen.add(key)
+        if (cand / "libiruvc.so").is_file():
+            return cand
+    return None
+
+
+def _sdk_lib_dir() -> Path:
+    sub = _arch_lib_subdir()
+    env = os.environ.get("IRTHERMAL_AC010_SDK")
+    if env:
+        lib = _resolve_lib_dir(Path(env), sub)
+        if lib is not None:
+            return lib
+    lib = _resolve_lib_dir(_BUNDLED_LINUX_LIBS, sub)
+    if lib is not None:
+        return lib
+    raise FileNotFoundError(
+        f"未找到 AC010 运行时库（架构 {platform.machine()} → {sub}）。\n"
+        "请重新安装 irthermal: pip install -e ./IrThermal/packages/irthermal\n"
+        "或设置 IRTHERMAL_AC010_SDK 指向含 libiruvc.so 的目录。"
+    )
+
+
+def _select_stream_fps(stream: _CameraStreamInfo, requested: int | None) -> int:
+    """从 SDK 枚举的 fps 列表中选择开流帧率；优先精确匹配 requested。"""
+    available = sorted({int(stream.fps[i]) for i in range(32) if stream.fps[i] > 0})
+    if not available:
+        return int(requested) if requested else 25
+    if requested is None:
+        return available[0]
+    if requested in available:
+        return requested
+    lower = [f for f in available if f <= requested]
+    if lower:
+        return max(lower)
+    return min(available)
 
 
 def temp_raw_to_celsius(raw: np.ndarray) -> np.ndarray:
@@ -98,11 +135,13 @@ class Tiny1CCamera:
         self,
         *,
         stream_index: int = 1,
+        fps: int | None = 25,
         warmup_s: float = 3.0,
         detach_uvc: bool = True,
         overlay: bool = True,
     ) -> None:
         self._stream_index = stream_index
+        self._requested_fps = int(fps) if fps is not None else None
         self._warmup_s = warmup_s
         self._detach_uvc = detach_uvc
         self._overlay = overlay
@@ -121,6 +160,13 @@ class Tiny1CCamera:
     def native_resolution(self) -> tuple[int, int]:
         """(宽, 高) 热图分辨率。"""
         return self._width, self._half_h
+
+    @property
+    def stream_fps(self) -> int:
+        """当前开流帧率（SDK uvc_camera_stream_start）。"""
+        if self._param is None:
+            return 0
+        return int(self._param.fps)
 
     def _load_libs(self) -> None:
         lib_dir = _sdk_lib_dir()
@@ -218,7 +264,7 @@ class Tiny1CCamera:
         param.width = streams[ri].width
         param.height = streams[ri].height
         param.frame_size = param.width * param.height * 2
-        param.fps = streams[ri].fps[0]
+        param.fps = _select_stream_fps(streams[ri], self._requested_fps)
         param.timeout_ms_delay = 1000
 
         if u.uvc_camera_stream_start(param, None) < 0:

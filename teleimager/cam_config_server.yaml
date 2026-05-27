@@ -77,4 +77,4 @@ thermal_camera:
 
   image_shape: [480, 640]
   binocular: false
-  fps: 15
+  fps: 25
