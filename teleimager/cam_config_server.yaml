@@ -20,7 +20,7 @@ head_camera:
   # RealSense RGB/depth nodes may share the same serial number.
   # Keep serial_number null so OpenCV selection uses video_id directly.
   serial_number: null
-  video_id: 6
+  video_id: 6  #注意，在缺失热成像相机时用4
 
 left_wrist_camera:
   enable_zmq: false
@@ -36,6 +36,7 @@ depth_camera:
   enable_zmq: true
   zmq_port: 55558
   enable_webrtc: false
+  optional: true              # 没有深度相机时跳过，不影响 RGB/record server
 
   type: realsense
   stream: depth

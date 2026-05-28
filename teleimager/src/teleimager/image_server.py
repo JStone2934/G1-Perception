@@ -2051,6 +2051,7 @@ class EncodedEpisodeWriter:
         self.episode_id = int(episode_id)
         self.color_dir = os.path.join(self.episode_dir, "colors")
         self.depth_dir = os.path.join(self.episode_dir, "depths")
+        self.thermography_dir = os.path.join(self.episode_dir, "thermography")
         self.audio_dir = os.path.join(self.episode_dir, "audios")
         self.json_path = os.path.join(self.episode_dir, "data.json")
         self.item_id = -1
@@ -2062,6 +2063,7 @@ class EncodedEpisodeWriter:
 
         os.makedirs(self.color_dir, exist_ok=True)
         os.makedirs(self.depth_dir, exist_ok=True)
+        os.makedirs(self.thermography_dir, exist_ok=True)
         os.makedirs(self.audio_dir, exist_ok=True)
 
         info = {
@@ -2070,6 +2072,7 @@ class EncodedEpisodeWriter:
             "author": "unitree",
             "image": {"width": 640, "height": 480, "fps": frequency},
             "depth": {"width": 640, "height": 480, "fps": frequency},
+            "thermography": {"width": 640, "height": 480, "fps": frequency},
             "audio": {"sample_rate": 16000, "channels": 1, "format": "PCM", "bits": 16},
             "joint_names": {"left_arm": [], "left_ee": [], "right_arm": [], "right_ee": [], "body": []},
             "tactile_names": {"left_ee": [], "right_ee": []},
@@ -2083,10 +2086,11 @@ class EncodedEpisodeWriter:
 
         self._worker.start()
 
-    def add_item(self, colors, depths, states, actions, tactiles=None, audios=None, sim_state=None):
+    def add_item(self, colors, depths, thermography=None, states=None, actions=None, tactiles=None, audios=None, sim_state=None):
         self._queue.put({
             "colors": colors or {},
             "depths": depths or {},
+            "thermography": thermography or {},
             "states": states,
             "actions": actions,
             "tactiles": tactiles,
@@ -2138,6 +2142,7 @@ class EncodedEpisodeWriter:
                     "idx": idx,
                     "colors": self._write_encoded_map(self.color_dir, idx, item.get("colors", {})),
                     "depths": self._write_encoded_map(self.depth_dir, idx, item.get("depths", {})),
+                    "thermography": self._write_encoded_map(self.thermography_dir, idx, item.get("thermography", {})),
                     "states": item.get("states"),
                     "actions": item.get("actions"),
                     "tactiles": item.get("tactiles"),
@@ -2188,6 +2193,7 @@ class G1EpisodeRecorderServer:
     def _capture_images(self):
         colors = {}
         depths = {}
+        thermography = {}
         topic_to_color_key = {
             "head_camera": "color_0",
             "left_wrist_camera": "color_1",
@@ -2206,7 +2212,20 @@ class G1EpisodeRecorderServer:
             encoded = self._packet_to_encoded(cam.get_jpeg_bytes(), "png")
             if encoded is not None:
                 depths["depth_0"] = encoded
-        return colors, depths
+
+        thermal_topics = [
+            topic
+            for topic in sorted(self._image_server._cameras.keys())
+            if "thermal" in topic
+        ]
+        for idx, topic in enumerate(thermal_topics):
+            cam = self._image_server._cameras.get(topic)
+            if cam is None or not cam.enable_zmq():
+                continue
+            encoded = self._packet_to_encoded(cam.get_jpeg_bytes(), "jpg")
+            if encoded is not None:
+                thermography[f"thermal_{idx}"] = encoded
+        return colors, depths, thermography
 
     def _handle_start(self, payload):
         episode_id = int(payload["episode_id"])
@@ -2239,10 +2258,11 @@ class G1EpisodeRecorderServer:
             return {"ok": True, "dropped": True}
         if writer.episode_id != episode_id:
             return {"ok": True, "dropped": True, "reason": "stale_episode_id"}
-        colors, depths = self._capture_images()
+        colors, depths, thermography = self._capture_images()
         writer.add_item(
             colors=colors,
             depths=depths,
+            thermography=thermography,
             states=payload.get("states"),
             actions=payload.get("actions"),
             tactiles=payload.get("tactiles"),
@@ -2459,6 +2479,7 @@ class ImageServer:
                 video_path = f"/dev/video{video_id}" if video_id else None
                 physical_path = str(cam_cfg.get("physical_path")) if cam_cfg.get("physical_path") else None
                 serial_number = str(cam_cfg.get("serial_number")) if cam_cfg.get("serial_number") else None
+                optional = bool(cam_cfg.get("optional", False))
 
                 if cam_type == "opencv":
                     if physical_path is not None:
@@ -2508,35 +2529,53 @@ class ImageServer:
 
                 elif cam_type == "realsense":
                     if not self._realsense_enable:
+                        msg = f"[Image Server] Please start image server with the '--rs' flag to support Realsense {cam_topic}."
+                        if optional:
+                            self._disable_optional_camera(cam_topic, cam_cfg, msg)
+                            continue
                         self._cameras[cam_topic] = None
-                        logger_mp.error(f"[Image Server] Please start image server with the '--rs' flag to support Realsense {cam_topic}.")
+                        logger_mp.error(msg)
                     elif serial_number is not None and not self._cam_finder.is_rs_serial_exist(serial_number):
+                        msg = f"[Image Server] Cannot find RealSenseCamera for {cam_topic} with serial number {serial_number}"
+                        if optional:
+                            self._disable_optional_camera(cam_topic, cam_cfg, msg)
+                            continue
                         self._cameras[cam_topic] = None
-                        logger_mp.error(f"[Image Server] Cannot find RealSenseCamera for {cam_topic} with serial number {serial_number}")
+                        logger_mp.error(msg)
                     elif serial_number is None and not self._cam_finder.rs_serial_numbers:
+                        msg = f"[Image Server] Cannot find any RealSenseCamera for {cam_topic}"
+                        if optional:
+                            self._disable_optional_camera(cam_topic, cam_cfg, msg)
+                            continue
                         self._cameras[cam_topic] = None
-                        logger_mp.error(f"[Image Server] Cannot find any RealSenseCamera for {cam_topic}")
+                        logger_mp.error(msg)
                     else:
                         rs_serial_number = serial_number or self._cam_finder.rs_serial_numbers[0]
-                        self._cameras[cam_topic] = RealSenseCamera(
-                            cam_topic, rs_serial_number, img_shape, fps,
-                            enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec,
-                            enable_depth=bool(cam_cfg.get("enable_depth", False)),
-                            stream=cam_cfg.get("stream", "color"),
-                            depth_visual_min_m=cam_cfg.get("depth_visual_min_m", 0.15),
-                            depth_visual_max_m=cam_cfg.get("depth_visual_max_m", 3.0),
-                            depth_colormap=cam_cfg.get("depth_colormap", "turbo"),
-                            depth_invert=cam_cfg.get("depth_invert", False),
-                            depth_align_to_color=cam_cfg.get("depth_align_to_color", False),
-                            depth_align_fill_holes=cam_cfg.get("depth_align_fill_holes", False),
-                            depth_align_fill_iterations=cam_cfg.get("depth_align_fill_iterations", 1),
-                            depth_spatial_filter=cam_cfg.get("depth_spatial_filter", False),
-                            depth_temporal_filter=cam_cfg.get("depth_temporal_filter", False),
-                            depth_hole_filling=cam_cfg.get("depth_hole_filling", False),
-                            depth_hole_filling_mode=cam_cfg.get("depth_hole_filling_mode", 1),
-                            shared_rgbd=cam_cfg.get("shared_rgbd", False),
-                            depth_png_compression=cam_cfg.get("depth_png_compression", 1),
-                        )
+                        try:
+                            self._cameras[cam_topic] = RealSenseCamera(
+                                cam_topic, rs_serial_number, img_shape, fps,
+                                enable_zmq, zmq_port, enable_webrtc, webrtc_port, webrtc_codec,
+                                enable_depth=bool(cam_cfg.get("enable_depth", False)),
+                                stream=cam_cfg.get("stream", "color"),
+                                depth_visual_min_m=cam_cfg.get("depth_visual_min_m", 0.15),
+                                depth_visual_max_m=cam_cfg.get("depth_visual_max_m", 3.0),
+                                depth_colormap=cam_cfg.get("depth_colormap", "turbo"),
+                                depth_invert=cam_cfg.get("depth_invert", False),
+                                depth_align_to_color=cam_cfg.get("depth_align_to_color", False),
+                                depth_align_fill_holes=cam_cfg.get("depth_align_fill_holes", False),
+                                depth_align_fill_iterations=cam_cfg.get("depth_align_fill_iterations", 1),
+                                depth_spatial_filter=cam_cfg.get("depth_spatial_filter", False),
+                                depth_temporal_filter=cam_cfg.get("depth_temporal_filter", False),
+                                depth_hole_filling=cam_cfg.get("depth_hole_filling", False),
+                                depth_hole_filling_mode=cam_cfg.get("depth_hole_filling_mode", 1),
+                                shared_rgbd=cam_cfg.get("shared_rgbd", False),
+                                depth_png_compression=cam_cfg.get("depth_png_compression", 1),
+                            )
+                        except Exception as exc:
+                            if optional:
+                                self._disable_optional_camera(cam_topic, cam_cfg, f"[Image Server] Optional RealSense {cam_topic} disabled: {exc}")
+                                continue
+                            raise
 
                 elif cam_type == "uvc":
                     uid = None
@@ -2618,10 +2657,7 @@ class ImageServer:
                         )
                     except Exception as exc:
                         if optional:
-                            logger_mp.warning(
-                                "[Image Server] Optional thermal %s disabled: %s",
-                                cam_topic, exc,
-                            )
+                            self._disable_optional_camera(cam_topic, cam_cfg, f"[Image Server] Optional thermal {cam_topic} disabled: {exc}")
                             continue
                         raise
 
@@ -2637,6 +2673,13 @@ class ImageServer:
             self._record_server = G1EpisodeRecorderServer(self, root_dir=record_root, port=record_port)
 
         logger_mp.info("[Image Server] Image server has started, waiting for client connections...")
+
+    def _disable_optional_camera(self, cam_topic, cam_cfg, reason):
+        logger_mp.warning("%s", reason)
+        logger_mp.warning("[Image Server] Optional camera %s disabled; continuing with remaining cameras.", cam_topic)
+        cam_cfg["enable_zmq"] = False
+        cam_cfg["enable_webrtc"] = False
+        self._cameras.pop(cam_topic, None)
 
     def _update_frames(self, cam_topic: str, camera: BaseCamera):
         try:
